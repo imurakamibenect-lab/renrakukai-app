@@ -1,0 +1,3296 @@
+<!DOCTYPE html>
+
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>豊中市介護保険事業者連絡会</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+</head>
+<body style="margin:0;padding:0;font-family:'Noto Sans JP',sans-serif;">
+  <div id="root"></div>
+
+  <!-- React + Babel (JSX対応) -->
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ============================================================
+// SUPABASE 設定
+// ============================================================
+const SUPABASE_URL = "https://mgoleggzumwexnbbmmkh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_5fimUkXf6QQTR8zbC9HrQQ_Bxn7D5a5";
+
+const sbHeaders = {
+  "Content-Type": "application/json",
+  "apikey": SUPABASE_KEY,
+  "Authorization": `Bearer ${SUPABASE_KEY}`,
+  "Prefer": "return=representation",
+};
+
+// Supabase REST API ヘルパー
+const sb = {
+  async select(table, query = "") {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
+      headers: { ...sbHeaders, "Accept": "application/json" },
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+  async insert(table, row) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: sbHeaders,
+      body: JSON.stringify(row),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+  async update(table, id, patch) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH",
+      headers: sbHeaders,
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+  async delete(table, id) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "DELETE",
+      headers: sbHeaders,
+    });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json();
+  },
+};
+
+// 全データをSupabaseから一括ロード
+async function loadAllData() {
+  const [members, users, projects, meetings, approvals, conflicts] = await Promise.all([
+    sb.select("members", "order=name"),
+    sb.select("users"),
+    sb.select("projects", "order=created_at.desc"),
+    sb.select("meetings", "order=meeting_datetime.desc"),
+    sb.select("approvals", "order=created_at.desc"),
+    sb.select("conflicts", "order=created_at.desc"),
+  ]);
+  return { members, users, projects, meetings, approvals, conflicts };
+}
+
+
+// ============================================================
+// CONSTANTS & CONFIG
+// ============================================================
+
+const ROLES = {
+  representative_director:       { label: "代表理事",       level: 1 },
+  vice_representative_director:  { label: "副代表理事",     level: 2 },
+  director:                      { label: "理事",           level: 3 },
+  committee_chair:               { label: "部会長",         level: 4 },
+  committee_officer:             { label: "部会役員",       level: 5 },
+  general_manager:               { label: "統括部長",       level: 6 },
+  secretariat:                   { label: "事務局",         level: 7 },
+  viewer:                        { label: "閲覧専用",       level: 8 },
+};
+const ROLE_LABELS = Object.fromEntries(
+  Object.entries(ROLES).map(([k, v]) => [k, v.label])
+);
+
+
+const MONTH_JP = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+const WDAY_JP = ["日","月","火","水","木","金","土"];
+
+const PROJECT_STATUS_CONFIG = {
+  "起案前":   { badge: "badge-solid-gray",   icon: "📝" },
+  "起案済":   { badge: "badge-solid-navy",   icon: "📤" },
+  "調整中":   { badge: "badge-solid-amber",  icon: "⚖️" },
+  "確認中":   { badge: "badge-solid-blue",   icon: "🔍" },
+  "承認待ち": { badge: "badge-solid-violet", icon: "⏳" },
+  "承認済":   { badge: "badge-solid-teal",   icon: "✅" },
+  "実行中":   { badge: "badge-solid-green",  icon: "▶" },
+  "完了":     { badge: "badge-solid-green",  icon: "🏁" },
+  "保留":     { badge: "badge-solid-gray",   icon: "⏸" },
+  "差戻し":   { badge: "badge-solid-red",    icon: "↩" },
+  "中止":     { badge: "badge-solid-red",    icon: "🚫" },
+};
+
+const APPROVAL_STATUS_CONFIG = {
+  "起案":     { badge: "badge-solid-navy" },
+  "確認中":   { badge: "badge-solid-blue" },
+  "承認待ち": { badge: "badge-solid-violet" },
+  "承認済":   { badge: "badge-solid-teal" },
+  "差戻し":   { badge: "badge-solid-red" },
+};
+
+// ============================================================
+// MOCK DATA
+// ============================================================
+
+const DEMO_USERS = [
+    { id: "u1", login_id: "yamada", password: "demo1234", member_id: "m1", role_type: "representative_director" },
+    { id: "u2", login_id: "suzuki", password: "demo1234", member_id: "m2", role_type: "vice_representative_director" },
+    { id: "u3", login_id: "tanaka", password: "demo1234", member_id: "m3", role_type: "director" },
+    { id: "u4", login_id: "sato", password: "demo1234", member_id: "m4", role_type: "committee_chair" },
+    { id: "u7", login_id: "ito", password: "demo1234", member_id: "m7", role_type: "secretariat" },
+];
+const INITIAL_DATA = {
+  users: [
+    { id: "u1", name: "山田 太郎",   email: "yamada@example.com",  role_type: "representative_director",      member_id: "m1", password: "demo1234" },
+    { id: "u2", name: "鈴木 花子",   email: "suzuki@example.com",  role_type: "vice_representative_director", member_id: "m2", password: "demo1234" },
+    { id: "u3", name: "田中 次郎",   email: "tanaka@example.com",  role_type: "director",                     member_id: "m3", password: "demo1234" },
+    { id: "u4", name: "佐藤 三郎",   email: "sato@example.com",    role_type: "committee_chair",              member_id: "m4", password: "demo1234" },
+    { id: "u5", name: "伊藤 四郎",   email: "ito@example.com",     role_type: "secretariat",                  member_id: "m5", password: "demo1234" },
+  ],
+  members: [
+    { id: "m1", name: "山田 太郎",   organization_name: "山田介護センター", role_type: "representative_director",      committee_name: "理事会",       phone: "06-1234-5678", email: "yamada@example.com", photo: null, active: true },
+    { id: "m2", name: "鈴木 花子",   organization_name: "鈴木デイサービス", role_type: "vice_representative_director", committee_name: "理事会",       phone: "06-2345-6789", email: "suzuki@example.com", photo: null, active: true },
+    { id: "m3", name: "田中 次郎",   organization_name: "田中介護事業所",   role_type: "director",                     committee_name: "理事会",       phone: "06-3456-7890", email: "tanaka@example.com", photo: null, active: true },
+    { id: "m4", name: "佐藤 三郎",   organization_name: "佐藤グループ",     role_type: "committee_chair",              committee_name: "研修・啓発部会", phone: "06-4567-8901", email: "sato@example.com",   photo: null, active: true },
+    { id: "m5", name: "伊藤 四郎",   organization_name: "事務局",           role_type: "secretariat",                  committee_name: "事務局",       phone: "06-5678-9012", email: "ito@example.com",    photo: null, active: true },
+    { id: "m6", name: "渡辺 五郎",   organization_name: "渡辺訪問介護",     role_type: "committee_officer",            committee_name: "研修・啓発部会", phone: "06-6789-0123", email: "watanabe@example.com", photo: null, active: true },
+    { id: "m7", name: "中村 六子",   organization_name: "中村福祉施設",     role_type: "general_manager",              committee_name: "地域連携部会", phone: "06-7890-1234", email: "nakamura@example.com", photo: null, active: true },
+    { id: "m8", name: "小林 七郎",   organization_name: "小林居宅介護",     role_type: "committee_officer",            committee_name: "地域連携部会", phone: "06-8901-2345", email: "kobayashi@example.com", photo: null, active: false },
+  ],
+  projects: [
+    {
+      id: "p1", project_name: "2025年度研修計画策定", project_type: "研修・啓発",
+      status: "実行中", priority: "高",
+      due_date: "2025-03-31", start_date: "2025-01-10",
+      owner_member_id: "m4", proposer_id: "m1", approver_id: "m1",
+      description: "2025年度の研修・啓発事業の年間計画を策定する。各部会との調整を経て理事会で承認を得る。",
+      members: ["m1","m4","m5"], attachments: [],
+      created_at: "2025-01-10",
+    },
+    {
+      id: "p2", project_name: "地域連携ネットワーク構築", project_type: "地域連携",
+      status: "承認待ち", priority: "高",
+      due_date: "2025-06-30", start_date: "2025-02-01",
+      owner_member_id: "m7", proposer_id: "m2", approver_id: "m1",
+      description: "豊中市内の介護事業者間の連携を強化するためのネットワークを構築する。",
+      members: ["m2","m7","m5"], attachments: [],
+      created_at: "2025-02-01",
+    },
+    {
+      id: "p3", project_name: "ICT活用推進事業", project_type: "IT推進",
+      status: "調整中", priority: "中",
+      due_date: "2025-12-31", start_date: "2025-03-01",
+      owner_member_id: "m3", proposer_id: "m3", approver_id: "m1",
+      description: "介護現場でのICT活用を推進するため、導入支援や研修を実施する。",
+      members: ["m3","m5"], attachments: [],
+      created_at: "2025-03-01",
+    },
+    {
+      id: "p4", project_name: "会員拡大キャンペーン", project_type: "会員管理",
+      status: "完了", priority: "低",
+      due_date: "2024-12-31", start_date: "2024-10-01",
+      owner_member_id: "m5", proposer_id: "m1", approver_id: "m1",
+      description: "非会員の介護事業者に向けた入会促進キャンペーンを実施。",
+      members: ["m1","m5"], attachments: [],
+      created_at: "2024-10-01",
+    },
+    {
+      id: "p5", project_name: "処遇改善加算対応研修", project_type: "研修・啓発",
+      status: "起案済", priority: "高",
+      due_date: "2025-04-30", start_date: "2025-03-15",
+      owner_member_id: "m4", proposer_id: "m4", approver_id: "m1",
+      description: "処遇改善加算の最新制度改正に対応した研修プログラムを企画・実施する。",
+      members: ["m4","m5"], attachments: [],
+      created_at: "2025-03-15",
+    },
+  ],
+  meetings: [
+    {
+      id: "mt1", meeting_name: "第3回理事会", meeting_type: "理事会",
+      meeting_datetime: "2025-03-20T14:00", location: "豊中市総合福祉センター 会議室A",
+      agenda: "2025年度事業計画・予算審議、役員改選、その他",
+      minutes: "出席者全員一致で2025年度事業計画を承認。予算については修正の上再提出を求める意見あり。",
+      attendees: ["m1","m2","m3"], related_projects: ["p1","p2"],
+      next_owner: "m5", next_schedule: "2025-06-20",
+      created_by: "m5", created_at: "2025-03-01", attachments: [],
+    },
+    {
+      id: "mt2", meeting_name: "研修・啓発部会 3月定例", meeting_type: "部会",
+      meeting_datetime: "2025-03-25T15:00", location: "オンライン（Zoom）",
+      agenda: "2025年度研修計画の確認、処遇改善加算研修の企画",
+      minutes: "",
+      attendees: ["m4","m6","m5"], related_projects: ["p1","p5"],
+      next_owner: "m4", next_schedule: "2025-04-25",
+      created_by: "m5", created_at: "2025-03-10", attachments: [],
+    },
+    {
+      id: "mt3", meeting_name: "地域連携部会 定例会議", meeting_type: "部会",
+      meeting_datetime: "2025-04-10T13:00", location: "豊中市役所 第2会議室",
+      agenda: "地域連携ネットワーク構築案の検討",
+      minutes: "",
+      attendees: ["m2","m7","m5"], related_projects: ["p2"],
+      next_owner: "m7", next_schedule: "2025-05-10",
+      created_by: "m5", created_at: "2025-03-20", attachments: [],
+    },
+  ],
+  approvals: [
+    {
+      id: "ap1", project_id: "p2", title: "地域連携ネットワーク構築 承認申請",
+      status: "承認待ち", approval_stage: "最終承認",
+      proposer_id: "m2", approver_id: "m1",
+      request_date: "2025-03-01", approve_date: null,
+      comment: "副代表理事として本事業の重要性を認識し、承認申請いたします。",
+      approver_comment: "",
+      history: [
+        { stage: "起案", actor_id: "m2", date: "2025-03-01", action: "承認", comment: "起案" },
+        { stage: "確認", actor_id: "m3", date: "2025-03-05", action: "承認", comment: "内容確認済み" },
+      ],
+    },
+    {
+      id: "ap2", project_id: "p1", title: "2025年度研修計画策定 進捗承認",
+      status: "承認済", approval_stage: "承認済",
+      proposer_id: "m4", approver_id: "m1",
+      request_date: "2025-02-01", approve_date: "2025-02-15",
+      comment: "第1四半期の研修計画について承認をお願いします。",
+      approver_comment: "内容を確認しました。承認します。",
+      history: [
+        { stage: "起案", actor_id: "m4", date: "2025-02-01", action: "承認", comment: "起案" },
+        { stage: "最終承認", actor_id: "m1", date: "2025-02-15", action: "承認", comment: "承認します" },
+      ],
+    },
+    {
+      id: "ap3", project_id: "p5", title: "処遇改善加算対応研修 実施承認",
+      status: "確認中", approval_stage: "確認中",
+      proposer_id: "m4", approver_id: "m1",
+      request_date: "2025-03-15", approve_date: null,
+      comment: "4月実施予定の研修について承認をお願いします。",
+      approver_comment: "",
+      history: [
+        { stage: "起案", actor_id: "m4", date: "2025-03-15", action: "承認", comment: "起案" },
+      ],
+    },
+  ],
+  conflicts: [
+    {
+      id: "cf1", project_id: "p2", member_id: "m2",
+      has_conflict: true, conflict_type: "利害関係者（競合事業者）",
+      description: "申請者の運営する事業所が連携ネットワーク参加候補先と取引関係にある。",
+      declared_at: "2025-02-05", reviewed_by: "m1", review_comment: "申請者は本案件の議決から除外。",
+    },
+    {
+      id: "cf2", project_id: "p1", member_id: "m4",
+      has_conflict: false, conflict_type: "",
+      description: "COIなし。",
+      declared_at: "2025-01-12", reviewed_by: "m1", review_comment: "問題なし。",
+    },
+  ],
+};
+
+
+// ============================================================
+// UTILITIES
+// ============================================================
+
+const genId = () => "id_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit" }) : "—";
+const fmtDateTime = (d) => d ? new Date(d).toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—";
+const today = new Date().toISOString().slice(0, 10);
+
+const CSS_TEXT = `
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap');
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    /* ── ブランドカラー ── */
+    --primary:       #0f6cbd;
+    --primary-dark:  #0c5a9e;
+    --primary-light: #deebf7;
+    --primary-pale:  #f0f6fc;
+
+    /* ── セマンティックカラー ── */
+    --success:       #107c10;
+    --success-light: #dff6dd;
+    --warning:       #8a5700;
+    --warning-light: #fff4ce;
+    --danger:        #c50f1f;
+    --danger-light:  #fde7e9;
+    --info:          #005b9e;
+    --info-light:    #cce4f7;
+    --purple:        #5c2d91;
+    --purple-light:  #ede9f5;
+
+    /* ── ニュートラル ── */
+    --gray-50:   #fafafa;
+    --gray-100:  #f5f5f5;
+    --gray-200:  #e8e8e8;
+    --gray-300:  #d1d1d1;
+    --gray-400:  #a8a8a8;
+    --gray-500:  #6e6e6e;
+    --gray-600:  #4a4a4a;
+    --gray-700:  #2e2e2e;
+    --navy:      #1b3a5c;
+    --navy-light:#e8eef5;
+
+    /* ── テキスト ── */
+    --text-primary:   #1a1a1a;
+    --text-secondary: #4a4a4a;
+    --text-muted:     #737373;
+    --text-disabled:  #a8a8a8;
+
+    /* ── 背景 ── */
+    --bg-app:    #f3f4f6;
+    --bg-white:  #ffffff;
+    --bg-subtle: #fafafa;
+
+    /* ── ボーダー ── */
+    --border:       #e0e0e0;
+    --border-focus: #0f6cbd;
+    --border-strong:#c0c0c0;
+
+    /* ── レガシー互換（旧変数名） ── */
+    --teal:          #0f7f7a;
+    --teal-light:    #12a09a;
+    --teal-pale:     #e6f5f4;
+    --red:           #c50f1f;
+    --green:         #107c10;
+    --crimson-light: #c50f1f;
+    --crimson-pale:  #fde7e9;
+    --emerald:       #107c10;
+    --emerald-light: #12a012;
+    --emerald-pale:  #dff6dd;
+    --amber:         #8a5700;
+    --amber-light:   #c07800;
+    --amber-pale:    #fff4ce;
+    --violet:        #5c2d91;
+    --violet-pale:   #ede9f5;
+    --stone:         #6e6e6e;
+    --stone-light:   #a8a8a8;
+    --stone-pale:    #fafafa;
+    --ink:           #1a1a1a;
+    --ink-mid:       #4a4a4a;
+    --ink-light:     #737373;
+    --parch:         #fafafa;
+    --parch-dark:    #f0f0f0;
+    --parch-border:  #e0e0e0;
+    --gold:          #8a5700;
+    --gold-light:    #c07800;
+    --gold-pale:     #fff4ce;
+    --gold-border:   #d4a017;
+
+    /* ── シャドウ ── */
+    --shadow-xs: 0 1px 2px rgba(0,0,0,0.06);
+    --shadow-sm: 0 1px 4px rgba(0,0,0,0.08);
+    --shadow-card: 0 2px 8px rgba(0,0,0,0.08);
+    --shadow-glow: 0 0 0 3px rgba(15,108,189,0.2);
+    --shadow-deep: 0 8px 24px rgba(0,0,0,0.12);
+
+    /* ── 形状 ── */
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --sidebar-w: 240px;
+  }
+
+  html, body { height: 100%; font-family: 'Noto Sans JP', system-ui, sans-serif; background: var(--bg-app); color: var(--text-primary); font-size: 14px; line-height: 1.6; -webkit-font-smoothing: antialiased; }
+  .app-root { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ── SIDEBAR ── */
+  .sidebar { width: var(--sidebar-w); min-width: var(--sidebar-w); background: var(--navy); display: flex; flex-direction: column; z-index: 100; overflow-y: auto; border-right: 1px solid rgba(255,255,255,0.08); }
+  .sidebar-logo { padding: 18px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .sidebar-logo-title { color: rgba(255,255,255,0.45); font-size: 9px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
+  .sidebar-logo-name { color: #ffffff; font-size: 12px; font-weight: 700; line-height: 1.5; }
+  .sidebar-nav { flex: 1; padding: 8px 8px; }
+  .nav-section { padding: 16px 8px 4px; font-size: 10px; color: rgba(255,255,255,0.4); letter-spacing: 0.1em; font-weight: 600; text-transform: uppercase; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; border-radius: var(--radius-md); color: rgba(255,255,255,0.65); font-size: 13px; font-weight: 500; transition: all 0.15s; margin-bottom: 1px; }
+  .nav-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+  .nav-item.active { background: rgba(255,255,255,0.15); color: #ffffff; font-weight: 600; }
+  .nav-icon { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; font-size: 16px; }
+  .nav-badge { background: var(--danger); color: white; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; margin-left: auto; }
+  .sidebar-user { border-top: 1px solid rgba(255,255,255,0.08); padding: 12px 14px; display: flex; align-items: center; gap: 10px; }
+  .user-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--primary); color: white; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; overflow: hidden; }
+  .user-name { color: #fff; font-size: 12px; font-weight: 600; }
+  .user-role { color: rgba(255,255,255,0.45); font-size: 11px; margin-top: 1px; }
+
+  /* ── MAIN ── */
+  .main-content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .topbar { background: var(--bg-white); border-bottom: 1px solid var(--border); padding: 0 20px; height: 52px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; box-shadow: var(--shadow-xs); }
+  .topbar-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+  .page-body { flex: 1; overflow-y: auto; padding: 20px; }
+
+  /* ── CARDS ── */
+  .card { background: var(--bg-white); border-radius: var(--radius-lg); border: 1px solid var(--border); box-shadow: var(--shadow-card); }
+  .card-header { padding: 14px 18px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+  .card-title { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+  .card-body { padding: 16px 18px; }
+
+  /* ── DASHBOARD GRID ── */
+  .dashboard-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin-bottom: 16px; }
+  .stat-card { background: var(--bg-white); border-radius: var(--radius-lg); padding: 12px 10px; border: 1px solid var(--border); box-shadow: var(--shadow-card); cursor: pointer; transition: box-shadow 0.15s; text-align: center; }
+  .stat-card:hover { box-shadow: var(--shadow-deep); transform: translateY(-1px); }
+  .stat-icon-wrap { width: 36px; height: 36px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+  .stat-value { font-size: 26px; font-weight: 800; line-height: 1; color: var(--text-primary); }
+  .stat-label { font-size: 10px; color: var(--text-muted); margin-top: 4px; font-weight: 500; }
+  .stat-sub { font-size: 11px; font-weight: 600; margin-top: 4px; }
+  .stat-sub-red   { color: var(--danger); }
+  .stat-sub-amber { color: var(--warning); }
+  .stat-sub-green { color: var(--success); }
+
+  /* ── BADGES ── */
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; }
+  .badge-solid-green  { background: var(--success-light); color: var(--success); }
+  .badge-solid-teal   { background: var(--teal-pale);     color: var(--teal); }
+  .badge-solid-blue   { background: var(--primary-light); color: var(--primary-dark); }
+  .badge-solid-violet { background: var(--purple-light);  color: var(--purple); }
+  .badge-solid-amber  { background: var(--warning-light); color: var(--warning); }
+  .badge-solid-orange { background: #fff0e6;              color: #8a3800; }
+  .badge-solid-red    { background: var(--danger-light);  color: var(--danger); }
+  .badge-solid-gray   { background: var(--gray-100);      color: var(--gray-600); }
+  .badge-solid-navy   { background: var(--navy-light);    color: var(--navy); }
+  .badge-teal    { background: var(--teal-pale);     color: var(--teal); }
+  .badge-navy    { background: var(--navy-light);    color: var(--navy); }
+  .badge-gold    { background: var(--warning-light); color: var(--warning); }
+  .badge-crimson { background: var(--danger-light);  color: var(--danger); }
+  .badge-sage    { background: var(--success-light); color: var(--success); }
+  .badge-gray    { background: var(--gray-100);      color: var(--gray-600); }
+  .badge-orange  { background: #fff0e6;              color: #8a3800; }
+  .badge-purple  { background: var(--purple-light);  color: var(--purple); }
+
+  /* ── BUTTONS ── */
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; font-family: inherit; white-space: nowrap; }
+  .btn-primary { background: var(--primary); color: white; border-color: var(--primary); }
+  .btn-primary:hover { background: var(--primary-dark); }
+  .btn-navy { background: var(--navy); color: white; border-color: var(--navy); }
+  .btn-navy:hover { opacity: 0.9; }
+  .btn-outline { background: white; color: var(--text-primary); border-color: var(--border-strong); }
+  .btn-outline:hover { background: var(--gray-50); border-color: var(--gray-400); }
+  .btn-danger { background: var(--danger); color: white; border-color: var(--danger); }
+  .btn-danger:hover { opacity: 0.9; }
+  .btn-ghost { background: transparent; color: var(--text-secondary); border: none; padding: 5px 8px; }
+  .btn-ghost:hover { background: var(--gray-100); }
+  .btn-success { background: var(--success); color: white; border-color: var(--success); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: var(--radius-sm); }
+  .btn-icon { padding: 6px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* ── FORMS ── */
+  .form-group { margin-bottom: 14px; }
+  .form-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 5px; }
+  .form-label .required { color: var(--danger); margin-left: 2px; }
+  .form-control { width: 100%; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); font-size: 16px; font-family: inherit; background: white; color: var(--text-primary); outline: none; transition: border-color 0.15s, box-shadow 0.15s; }
+  .form-control:focus { border-color: var(--border-focus); box-shadow: var(--shadow-card); }
+  .form-select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236e6e6e' d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+  .form-textarea { resize: vertical; min-height: 80px; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-hint { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+  /* ── SEARCH ── */
+  .search-box { position: relative; flex: 1; min-width: 0; }
+  .search-box input { padding-left: 34px; }
+  .search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 14px; pointer-events: none; }
+
+  /* ── LIST ITEM CARDS ── */
+  .list-item-card { background: white; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px 16px; margin-bottom: 8px; cursor: pointer; box-shadow: var(--shadow-xs); transition: all 0.15s; display: flex; align-items: center; gap: 12px; -webkit-tap-highlight-color: transparent; }
+  .list-item-card:hover { box-shadow: var(--shadow-card); border-color: var(--gray-300); }
+  .list-item-card:active { transform: scale(0.995); }
+  .list-item-info { flex: 1; min-width: 0; }
+  .list-item-title { font-size: 14px; font-weight: 600; color: var(--text-primary); line-height: 1.4; }
+  .list-item-sub { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+  .list-item-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .chevron { color: var(--gray-300); font-size: 14px; }
+
+  /* ── DETAIL HEADER ── */
+  .detail-header { background: var(--navy); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 16px; }
+  .detail-title { font-size: 18px; font-weight: 700; color: #ffffff; margin-bottom: 8px; line-height: 1.3; }
+  .detail-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .info-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
+  .info-value { font-size: 13.5px; color: var(--text-primary); font-weight: 500; }
+
+  /* ── TABS ── */
+  .tab-bar { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
+  .tab-item { padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -2px; white-space: nowrap; transition: all 0.15s; }
+  .tab-item:hover { color: var(--text-primary); }
+  .tab-item.active { color: var(--primary); border-bottom-color: var(--primary); }
+
+  /* ── MODALS ── */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+  .modal-box { background: white; border-radius: var(--radius-xl); width: 100%; max-width: 560px; max-height: 90vh; display: flex; flex-direction: column; box-shadow: var(--shadow-deep); }
+  .modal-header { padding: 18px 20px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .modal-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+  .modal-body { padding: 18px 20px; overflow-y: auto; flex: 1; min-height: 0; }
+  .modal-footer { padding: 14px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0; background: white; position: sticky; bottom: 0; z-index: 1; }
+
+  /* ── ALERTS ── */
+  .alert { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; border-radius: var(--radius-md); font-size: 13px; font-weight: 500; border: 1px solid; }
+  .alert-danger  { background: var(--danger-light);  color: var(--danger);  border-color: #f5b5ba; }
+  .alert-warning { background: var(--warning-light); color: var(--warning); border-color: #f0d080; }
+  .alert-info    { background: var(--info-light);    color: var(--info);    border-color: #90c8f0; }
+  .alert-success { background: var(--success-light); color: var(--success); border-color: #90d090; }
+
+  /* ── TABLE ── */
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th { padding: 9px 12px; background: var(--gray-50); font-size: 11px; font-weight: 700; color: var(--text-muted); text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; letter-spacing: 0.04em; text-transform: uppercase; }
+  .data-table td { padding: 11px 12px; border-bottom: 1px solid var(--border); font-size: 13px; color: var(--text-primary); }
+  .data-table tr:hover td { background: var(--gray-50); }
+  .data-table tr:last-child td { border-bottom: none; }
+  .table-link { color: var(--primary); font-weight: 600; cursor: pointer; }
+  .table-link:hover { text-decoration: underline; }
+
+  /* ── STATUS DOT ── */
+  .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+  .status-active   { background: var(--success); }
+  .status-inactive { background: var(--gray-400); }
+  .status-pending  { background: var(--warning); }
+
+  /* ── COI ── */
+  .coi-flag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 4px; }
+  .coi-yes { background: var(--danger-light);  color: var(--danger); }
+  .coi-no  { background: var(--success-light); color: var(--success); }
+
+  /* ── APPROVAL FLOW ── */
+  .approval-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .flow-step { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .flow-circle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; border: 2px solid; }
+  .flow-pending  { background: var(--warning-light); color: var(--warning); border-color: #f0d080; }
+  .flow-done     { background: var(--success);       color: white;         border-color: var(--success); }
+  .flow-waiting  { background: var(--gray-100);      color: var(--gray-400); border-color: var(--gray-300); }
+  .flow-rejected { background: var(--danger);        color: white;         border-color: var(--danger); }
+  .flow-arrow { color: var(--gray-300); font-size: 16px; margin-bottom: 16px; }
+  .flow-label { font-size: 10px; color: var(--text-muted); font-weight: 600; text-align: center; max-width: 60px; }
+
+  /* ── EMPTY STATE ── */
+  .empty-state { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+  .empty-state-icon { font-size: 32px; margin-bottom: 8px; opacity: 0.4; }
+  .empty-state-text { font-size: 13px; font-weight: 500; }
+
+  /* ── ORG CHART ── */
+  .org-chart { display: flex; flex-direction: column; align-items: center; }
+  .org-level { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; padding: 8px 0; }
+  .org-node { background: white; border: 1.5px solid var(--border); border-radius: var(--radius-md); padding: 10px 16px; text-align: center; min-width: 120px; box-shadow: var(--shadow-xs); }
+  .org-node.top { border-color: var(--primary); background: var(--primary-pale); }
+  .org-node-role { font-size: 10px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .org-node-name { font-size: 13px; font-weight: 700; color: var(--text-primary); margin-top: 2px; }
+  .org-connector { height: 20px; width: 2px; background: var(--border); margin: 0 auto; }
+
+  /* ── ANIMATION ── */
+  .page-enter { animation: fadeUp 0.2s ease; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ── SCROLLBAR ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--gray-400); }
+
+  /* ── BOTTOM NAV (mobile) ── */
+  .bottom-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: white; border-top: 1px solid var(--border); z-index: 200; padding-bottom: env(safe-area-inset-bottom, 0px); box-shadow: 0 -2px 8px rgba(0,0,0,0.08); }
+  .bottom-nav-inner { display: flex; height: 60px; }
+  .bottom-nav-item { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; position: relative; gap: 2px; padding: 6px 2px 4px; transition: all 0.15s; -webkit-tap-highlight-color: transparent; color: var(--gray-400); font-size: 9.5px; font-weight: 600; }
+  .bottom-nav-item .bn-icon-wrap { width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+  .bottom-nav-item.active { color: var(--primary); }
+  .bottom-nav-item.active .bn-icon-wrap { background: var(--primary-light); }
+  .bn-badge { position: absolute; top: 5px; left: 50%; margin-left: 4px; background: var(--danger); color: white; font-size: 9px; font-weight: 700; min-width: 16px; height: 16px; border-radius: 8px; text-align: center; line-height: 16px; padding: 0 3px; }
+
+  /* ── MOBILE DRAWER ── */
+  .mobile-drawer-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 300; }
+  .mobile-drawer { position: fixed; top: 0; left: 0; bottom: 0; width: 280px; background: var(--navy); z-index: 400; overflow-y: auto; transform: translateX(-100%); transition: transform 0.25s ease; }
+  .mobile-drawer.open { transform: translateX(0); }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .bottom-nav { display: block; }
+    .mobile-drawer-overlay { display: block; }
+    .page-body { padding: 14px 14px 80px; }
+    .topbar { padding: 0 14px; height: 48px; }
+    .topbar-title { font-size: 15px; }
+    .dashboard-grid { grid-template-columns: repeat(4,1fr); gap: 6px; }
+    .detail-grid { grid-template-columns: 1fr; }
+    .form-row { grid-template-columns: 1fr; }
+    .modal-box { max-height: 85dvh; height: 85dvh; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+    .modal-overlay { align-items: flex-end; padding: 0; }
+    .modal-footer { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+    .detail-header { padding: 16px; border-radius: var(--radius-lg); }
+    .detail-title { font-size: 16px; }
+  }
+  @media (min-width: 769px) {
+    .mobile-drawer-overlay { display: none !important; }
+    .mobile-drawer { display: none !important; }
+    .bottom-nav { display: none !important; }
+  }
+
+  /* ── FAB ── */
+  .fab-overlay { position: fixed; inset: 0; z-index: 900; background: rgba(0,0,0,0.4); }
+  .fab-menu { position: fixed; right: 20px; bottom: 90px; z-index: 910; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+  .fab-menu-item { display: flex; align-items: center; gap: 10px; background: white; border: 1px solid var(--border); border-radius: 28px; padding: 9px 16px 9px 12px; cursor: pointer; box-shadow: var(--shadow-deep); transition: all 0.15s; font-size: 13px; font-weight: 600; color: var(--text-primary); }
+  .fab-menu-item:hover { background: var(--primary-pale); border-color: var(--primary); }
+  .fab-btn { position: fixed; right: 20px; bottom: 80px; z-index: 920; width: 54px; height: 54px; border-radius: 50%; background: var(--primary); border: none; box-shadow: 0 4px 16px rgba(15,108,189,0.4); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 24px; color: white; transition: all 0.2s; }
+  .fab-btn:hover { background: var(--primary-dark); transform: scale(1.05); }
+  .fab-btn.open { background: var(--danger); transform: rotate(45deg); }
+
+  @media (min-width: 769px) {
+    .fab-btn { display: none !important; }
+    .fab-overlay { display: none !important; }
+    .fab-menu { display: none !important; }
+    .page-body { padding: 20px; }
+  }
+  /* ── BACK BAR ── */
+  .back-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .back-btn { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; border-radius: var(--radius-md); background: var(--bg-white); border: 1px solid var(--border); color: var(--text-primary); font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: var(--shadow-xs); }
+  .back-btn:hover { background: var(--gray-50); }
+  .back-btn::before { content: "‹"; font-size: 18px; line-height: 1; font-weight: 400; }
+`;
+
+// ============================================================
+// STYLE INJECTION
+// ============================================================
+function useStyles() {
+  React.useEffect(() => {
+    const el = document.createElement('style');
+    el.id = 'app-styles';
+    if (!document.getElementById('app-styles')) {
+      el.textContent = CSS_TEXT;
+      document.head.appendChild(el);
+    }
+    return () => {};
+  }, []);
+}
+
+
+// ============================================================
+// DESIGN SYSTEM
+// ============================================================
+
+
+// ============================================================
+// COMPONENTS
+// ============================================================
+
+function AttachmentUpload({ attachments = [], onChange }) {
+  const ref = useRef(null);
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files);
+    const newAtts = files.map(f => ({
+      id: "att_" + Date.now() + "_" + Math.random().toString(36).slice(2),
+      name: f.name, size: f.size, type: f.type,
+      preview: f.type.startsWith("image/") ? URL.createObjectURL(f) : null,
+    }));
+    onChange([...attachments, ...newAtts]);
+    e.target.value = "";
+  };
+  const remove = (id) => onChange(attachments.filter(a => a.id !== id));
+  const fmtSize = (bytes) => bytes < 1024*1024 ? `${(bytes/1024).toFixed(0)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`;
+  return (
+    <div>
+      <input ref={ref} type="file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple style={{ display: "none" }} onChange={handleFiles} />
+      <button type="button" className="btn btn-outline btn-sm" onClick={() => ref.current.click()} style={{ marginBottom: 10 }}>
+        📎 ファイルを添付（画像・PDF・Word・Excel）
+      </button>
+      {attachments.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+          {attachments.map(att => (
+            <div key={att.id} style={{ position: "relative", border: "1px solid var(--gray-200)", borderRadius: "var(--radius-sm)", overflow: "hidden", background: "var(--gray-50)" }}>
+              {att.preview
+                ? <div style={{ position: "relative" }}>
+                    <img src={att.preview} alt={att.name} style={{ width: 80, height: 80, objectFit: "cover", display: "block" }} />
+                    <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.6)", color: "white", fontSize: 9, padding: "2px 4px", overflow: "hidden", whiteSpace: "nowrap" }}>{att.name}</div>
+                  </div>
+                : <div style={{ width: 80, height: 80, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 6 }}>
+                    <div style={{ fontSize: 24 }}>{att.name.endsWith(".pdf") ? "📄" : att.name.match(/\.xlsx?$/) ? "📊" : "📝"}</div>
+                    <div style={{ fontSize: 9, textAlign: "center", color: "var(--gray-600)", marginTop: 4, wordBreak: "break-all", lineHeight: 1.2 }}>{att.name.slice(0, 12)}</div>
+                    <div style={{ fontSize: 9, color: "var(--gray-400)" }}>{fmtSize(att.size)}</div>
+                  </div>
+              }
+              <button onClick={() => remove(att.id)} style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, borderRadius: "50%", background: "rgba(0,0,0,0.6)", color: "white", border: "none", cursor: "pointer", fontSize: 9, lineHeight: 1 }}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+function AttachmentViewer({ attachments = [] }) {
+  const [lightbox, setLightbox] = useState(null);
+  const fmtSize = (bytes) => bytes < 1024 * 1024 ? `${(bytes/1024).toFixed(0)}KB` : `${(bytes/1024/1024).toFixed(1)}MB`;
+  if (attachments.length === 0) return <div className="empty-state"><div className="empty-state-text">添付ファイルなし</div></div>;
+  return (
+    <div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        {attachments.map(att => (
+          <div key={att.id} style={{ border: "1px solid var(--gray-200)", borderRadius: "var(--radius-sm)", overflow: "hidden", background: "white", cursor: att.preview ? "pointer" : "default", boxShadow: "var(--shadow-sm)" }}
+               onClick={() => att.preview && setLightbox(att)}>
+            {att.preview
+              ? <img src={att.preview} alt={att.name} style={{ width: 100, height: 100, objectFit: "cover", display: "block" }} />
+              : <div style={{ width: 100, height: 100, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                  <div style={{ fontSize: 32 }}>{att.name.endsWith(".pdf") ? "📄" : att.name.match(/\.xlsx?$/) ? "📊" : "📝"}</div>
+                </div>
+            }
+            <div style={{ padding: "4px 6px", borderTop: "1px solid var(--gray-100)" }}>
+              <div style={{ fontSize: 10, color: "var(--gray-700)", fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap", maxWidth: 90 }}>{att.name}</div>
+              <div style={{ fontSize: 9, color: "var(--gray-400)" }}>{fmtSize(att.size)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      {lightbox && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setLightbox(null)}>
+          <img src={lightbox.preview} alt={lightbox.name} style={{ maxWidth: "92vw", maxHeight: "92vh", objectFit: "contain", borderRadius: 8 }} />
+          <div style={{ position: "absolute", top: 20, right: 20, color: "white", fontSize: 13, background: "rgba(0,0,0,0.5)", padding: "4px 12px", borderRadius: 20 }}>{lightbox.name} — タップで閉じる</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AvatarUpload({ value, onChange, name }) {
+  const ref = useRef(null);
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => onChange(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+  const initials = name ? name.slice(0, 2) : "?";
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 60, height: 60, borderRadius: "50%", background: value ? "transparent" : "var(--primary)", border: "2px solid var(--border)", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}
+           onClick={() => ref.current.click()}>
+        {value
+          ? <img src={value} alt="avatar" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : <span style={{ color: "white", fontSize: 18, fontWeight: 700 }}>{initials}</span>
+        }
+      </div>
+      <div>
+        <button type="button" className="btn btn-outline btn-sm" onClick={() => ref.current.click()}>写真を変更</button>
+        {value && <button type="button" className="btn btn-ghost btn-sm" onClick={() => onChange(null)} style={{ marginLeft: 6 }}>削除</button>}
+      </div>
+      <input ref={ref} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+    </div>
+  );
+}
+
+
+function LogoUpload({ value, onChange }) {
+  const ref = useRef();
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { alert("2MB以下の画像を選択してください"); return; }
+    const b64 = await fileToBase64(file);
+    onChange(b64);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+      <input ref={ref} type="file" accept="image/*" style={{ display: "none" }} onChange={handleFile} />
+      <div style={{ width: 140, height: 90, border: "2px dashed var(--gray-300)", borderRadius: "var(--radius-md)", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden", background: "var(--gray-50)", cursor: "pointer" }} onClick={() => ref.current.click()}>
+        {value
+          ? <img src={value} alt="ロゴ" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", padding: 8 }} />
+          : <span style={{ fontSize: 11, color: "var(--gray-400)", textAlign: "center", padding: 8 }}>クリックして<br/>アップロード</span>
+        }
+      </div>
+      <div>
+        <button className="btn btn-outline btn-sm" onClick={() => ref.current.click()}>🖼️ ロゴ画像を変更</button>
+        {value && <button className="btn btn-outline btn-sm" style={{ marginLeft: 8, color: "var(--red)" }} onClick={() => onChange(null)}>削除</button>}
+        <div style={{ fontSize: 11, color: "var(--gray-400)", marginTop: 6 }}>PNG / JPG / SVG（2MB以下）</div>
+        <div style={{ fontSize: 11, color: "var(--gray-400)" }}>変更するとサイドバー・ログイン画面に反映されます</div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// COMPONENTS
+// ============================================================
+
+function Badge({ className, children }) {
+  return <span className={`badge ${className}`}>{children}</span>;
+}
+
+// ============================================================
+// CALENDAR VIEW
+// ============================================================
+function CalendarView({ data, setData, setPage, setDetailId, currentUser, goBack}) {
+  const now = new Date();
+  const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [viewMonth, setViewMonth] = useState(now.getMonth()); // 0-indexed
+  const [selectedDate, setSelectedDate] = useState(null); // "YYYY-MM-DD"
+  const [quickType, setQuickType] = useState(null); // "project" | "meeting"
+  const [showProjectForm, setShowProjectForm] = useState(false);
+  const [showMeetingForm, setShowMeetingForm] = useState(false);
+
+  const canCreate = !["viewer"].includes(currentUser.role_type);
+
+  // ── カレンダーグリッド生成 ──
+  const firstDay = new Date(viewYear, viewMonth, 1);
+  const lastDay  = new Date(viewYear, viewMonth + 1, 0);
+  const startWday = firstDay.getDay(); // 0=日
+  const daysInMonth = lastDay.getDate();
+
+  // 前月の末尾を埋める
+  const prevMonthLast = new Date(viewYear, viewMonth, 0).getDate();
+  const cells = [];
+  for (let i = startWday - 1; i >= 0; i--) {
+    cells.push({ date: null, day: prevMonthLast - i, other: true });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${viewYear}-${String(viewMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    cells.push({ date: dateStr, day: d, other: false });
+  }
+  while (cells.length % 7 !== 0) {
+    cells.push({ date: null, day: cells.length - daysInMonth - startWday + 1, other: true });
+  }
+
+  // ── 各日付のイベント集計 ──
+  const getEvents = (dateStr) => {
+    if (!dateStr) return { projects: [], meetings: [] };
+    const projects = data.projects.filter(p => p.due_date === dateStr);
+    const meetings  = data.meetings.filter(m => m.meeting_datetime && m.meeting_datetime.startsWith(dateStr));
+    return { projects, meetings };
+  };
+
+  // ── 今日 ──
+  const todayStr = today; // グローバル定数
+
+  // ── 選択日のイベント ──
+  const selectedEvents = selectedDate ? getEvents(selectedDate) : null;
+
+  // ── 月移動 ──
+  const prevMonth = () => {
+    if (viewMonth === 0) { setViewYear(y => y-1); setViewMonth(11); }
+    else setViewMonth(m => m-1);
+    setSelectedDate(null);
+  };
+  const nextMonth = () => {
+    if (viewMonth === 11) { setViewYear(y => y+1); setViewMonth(0); }
+    else setViewMonth(m => m+1);
+    setSelectedDate(null);
+  };
+  const goToday = () => {
+    setViewYear(now.getFullYear());
+    setViewMonth(now.getMonth());
+    setSelectedDate(todayStr);
+  };
+
+    
+  // ── 簡易案件登録フォーム ──
+  const QuickProjectForm = () => {
+    const [form, setForm] = useState({
+      project_name: "", project_type: "その他", due_date: selectedDate || "", status: "起案済"
+    });
+    const save = () => {
+      if (!form.project_name.trim()) return;
+      const newP = {
+        id: genId(), project_code: `PRJ-${viewYear}-${String(data.projects.length+1).padStart(3,'0')}`,
+        project_name: form.project_name, project_type: form.project_type,
+        proposer_member_id: currentUser.id, owner_member_id: currentUser.id,
+        status: form.status, due_date: form.due_date,
+        approver_id: "", has_conflict_flag: false,
+        summary: "", notes: "", next_action: "",
+      };
+      setData(d => ({ ...d, projects: [...d.projects, newP] }));
+      setShowProjectForm(false);
+    };
+    return (
+      <div style={{ background: "var(--primary-pale)", border: "2px solid var(--primary)", borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: "var(--text-primary)", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+          📜 新規案件登録
+          <button onClick={() => setShowProjectForm(false)} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--text-muted)", fontSize: 16, cursor: "pointer" }}>✕</button>
+        </div>
+        <div className="form-group">
+          <label className="form-label">案件名 <span className="required">*</span></label>
+          <input className="form-control" value={form.project_name} onChange={e => setForm(f => ({...f, project_name: e.target.value}))} placeholder="案件名を入力" autoFocus />
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">種別</label>
+            <select className="form-control form-select" value={form.project_type} onChange={e => setForm(f => ({...f, project_type: e.target.value}))}>
+              {["行政対応案件","外部企業対応案件","未来創造支援事業案件","研修事業案件","その他"].map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">期限日</label>
+            <input type="date" className="form-control" value={form.due_date} onChange={e => setForm(f => ({...f, due_date: e.target.value}))} />
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-outline btn-sm" onClick={() => setShowProjectForm(false)}>キャンセル</button>
+          <button className="btn btn-primary btn-sm" onClick={save} disabled={!form.project_name.trim()}>登録する</button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── 簡易会議登録フォーム ──
+  const QuickMeetingForm = () => {
+    const [form, setForm] = useState({
+      meeting_name: "", meeting_type: "理事会", location: "",
+      meeting_datetime: selectedDate ? `${selectedDate}T10:00` : "",
+    });
+    const save = () => {
+      if (!form.meeting_name.trim()) return;
+      const newM = {
+        id: genId(), meeting_name: form.meeting_name, meeting_type: form.meeting_type,
+        meeting_datetime: form.meeting_datetime, location: form.location,
+        agenda: "", decisions: "", pending_items: "", action_items: "", next_owner: "", next_schedule: "",
+        created_by_member_id: currentUser.id, attendees: [], projects: [], attachments: [],
+      };
+      setData(d => ({ ...d, meetings: [...d.meetings, newM] }));
+      setShowMeetingForm(false);
+    };
+    return (
+      <div style={{ background: "var(--teal-pale)", border: "2px solid #5eead4", borderRadius: 14, padding: 16, marginBottom: 12 }}>
+        <div style={{ fontWeight: 800, fontSize: 13, color: "var(--text-primary)", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}>
+          📖 新規会議登録
+          <button onClick={() => setShowMeetingForm(false)} style={{ marginLeft: "auto", background: "none", border: "none", color: "var(--text-muted)", fontSize: 16, cursor: "pointer" }}>✕</button>
+        </div>
+        <div className="form-group">
+          <label className="form-label">会議名 <span className="required">*</span></label>
+          <input className="form-control" value={form.meeting_name} onChange={e => setForm(f => ({...f, meeting_name: e.target.value}))} placeholder="例：第3回理事会" autoFocus />
+        </div>
+        <div className="form-row">
+          <div className="form-group">
+            <label className="form-label">種別</label>
+            <select className="form-control form-select" value={form.meeting_type} onChange={e => setForm(f => ({...f, meeting_type: e.target.value}))}>
+              {["理事会","部会","その他"].map(t => <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <label className="form-label">日時</label>
+            <input type="datetime-local" className="form-control" value={form.meeting_datetime} onChange={e => setForm(f => ({...f, meeting_datetime: e.target.value}))} />
+          </div>
+        </div>
+        <div className="form-group">
+          <label className="form-label">場所</label>
+          <input className="form-control" value={form.location} onChange={e => setForm(f => ({...f, location: e.target.value}))} placeholder="例：事務局会議室" />
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-outline btn-sm" onClick={() => setShowMeetingForm(false)}>キャンセル</button>
+          <button className="btn btn-primary btn-sm" onClick={save} disabled={!form.meeting_name.trim()}>登録する</button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="page-enter" style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100dvh - 120px)", overflow: "hidden" }}>
+
+      {/* ── ヘッダー：月移動 ── */}
+      <div style={{
+        background: "var(--navy)", flexShrink: 0,
+        border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12,
+        padding: "14px 18px", marginBottom: 14,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        boxShadow: "var(--shadow-card)",
+      }}>
+        <button onClick={prevMonth} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, width: 36, height: 36, color: "white", fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>‹</button>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontSize: 9, color: "var(--primary)", letterSpacing: "0.14em", fontWeight: 800, textTransform: "uppercase", marginBottom: 2 }}>📅 カレンダー</div>
+          <div style={{ fontSize: 22, fontWeight: 900, color: "#ffffff", letterSpacing: "0.01em" }}>
+            {viewYear}年 {MONTH_JP[viewMonth]}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={goToday} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "6px 12px", color: "white", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>今日</button>
+          <button onClick={nextMonth} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, width: 36, height: 36, color: "white", fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>›</button>
+        </div>
+      </div>
+
+      {/* ── カレンダーグリッド ── */}
+      <div style={{
+        background: "white", flexShrink: 0,
+        border: "1px solid var(--border)", borderRadius: 12,
+        overflow: "hidden", boxShadow: "var(--shadow-card)", marginBottom: 14,
+      }}>
+        {/* 曜日ヘッダー */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", borderBottom: "2px solid var(--border)" }}>
+          {WDAY_JP.map((w, i) => (
+            <div key={w} style={{
+              textAlign: "center", padding: "10px 2px", fontSize: 11, fontWeight: 800,
+              color: i === 0 ? "#ef4444" : i === 6 ? "#3b82f6" : "var(--text-muted)",
+              letterSpacing: "0.04em",
+              background: "rgba(15,108,189,0.04)",
+            }}>{w}</div>
+          ))}
+        </div>
+
+        {/* 日付セル */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)" }}>
+          {cells.map((cell, idx) => {
+            const events = getEvents(cell.date);
+            const hasProject = events.projects.length > 0;
+            const hasMeeting = events.meetings.length > 0;
+            const isToday = cell.date === todayStr;
+            const isSelected = cell.date === selectedDate;
+            const isOverdue = hasProject && events.projects.some(p => p.due_date < todayStr && !["完了","中止"].includes(p.status));
+            const isDueSoon = hasProject && events.projects.some(p => {
+              const diff = (new Date(p.due_date) - new Date(todayStr)) / (1000*60*60*24);
+              return diff >= 0 && diff <= 3;
+            });
+            const wday = idx % 7;
+            const borderRight = (idx % 7) < 6 ? "1px solid var(--border)" : "none";
+            const borderBottom = idx < cells.length - 7 ? "1px solid var(--border)" : "none";
+
+            return (
+              <div key={idx}
+                onClick={() => cell.date && setSelectedDate(cell.date === selectedDate ? null : cell.date)}
+                style={{
+                  borderRight, borderBottom,
+                  minHeight: 64, padding: "6px 5px 4px",
+                  cursor: cell.date ? "pointer" : "default",
+                  background: isSelected
+                    ? "var(--primary-pale)"
+                    : isToday
+                      ? "var(--primary-light)"
+                      : cell.other ? "var(--gray-50)" : "transparent",
+                  transition: "background 0.1s",
+                  position: "relative",
+                }}
+              >
+                {/* 選択枠 */}
+                {isSelected && (
+                  <div style={{ position: "absolute", inset: 1, border: "2px solid var(--primary)", borderRadius: 6, pointerEvents: "none" }} />
+                )}
+                {/* 日付数字 */}
+                <div style={{
+                  width: 24, height: 24, borderRadius: "50%",
+                  background: isToday ? "var(--primary)" : "transparent",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 12.5, fontWeight: isToday ? 900 : 600,
+                  color: isToday ? "white"
+                    : cell.other ? "var(--gray-300)"
+                    : wday === 0 ? "var(--danger)"
+                    : wday === 6 ? "var(--primary)"
+                    : "var(--text-primary)",
+                  marginBottom: 3,
+                }}>{cell.day}</div>
+
+                {/* イベントドット */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {events.meetings.slice(0, 2).map((m, mi) => (
+                    <div key={mi} style={{
+                      background: "linear-gradient(90deg,#059669,#10b981)",
+                      borderRadius: 3, padding: "1px 4px",
+                      fontSize: 9, fontWeight: 700, color: "white",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                      lineHeight: 1.6,
+                    }}>🏛 {m.meeting_name.slice(0, 6)}</div>
+                  ))}
+                  {events.projects.slice(0, 2).map((p, pi) => {
+                    const pOver = p.due_date < todayStr && !["完了","中止"].includes(p.status);
+                    const bg = pOver ? "linear-gradient(90deg,#dc2626,#ef4444)"
+                      : p.status === "完了" ? "linear-gradient(90deg,#6ee7b7,#34d399)"
+                      : "linear-gradient(90deg,#d97706,#f59e0b)";
+                    return (
+                      <div key={pi} style={{
+                        background: bg, borderRadius: 3, padding: "1px 4px",
+                        fontSize: 9, fontWeight: 700, color: "white",
+                        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        lineHeight: 1.6,
+                      }}>📜 {(p.project_name||"").slice(0, 6)}</div>
+                    );
+                  })}
+                  {(events.meetings.length + events.projects.length) > 4 && (
+                    <div style={{ fontSize: 9, color: "var(--text-muted)", fontWeight: 700, paddingLeft: 2 }}>
+                      +{events.meetings.length + events.projects.length - 4}件
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── 凡例 ── */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14, padding: "0 2px", flexShrink: 0 }}>
+        {[
+          { color: "var(--success)", label: "会議" },
+          { color: "var(--warning)", label: "案件期限" },
+          { color: "var(--danger)", label: "期限超過" },
+          { color: "var(--success)", label: "完了済み" },
+        ].map(l => (
+          <div key={l.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 2, background: l.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 10.5, color: "var(--text-muted)", fontWeight: 600 }}>{l.label}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* ── 選択日パネル ── */}
+      {selectedDate && (
+        <div style={{ animation: "questReveal 0.2s ease", overflowY: "auto", flex: 1 }}>
+          {/* 日付ヘッダー */}
+          <div style={{
+            background: "var(--navy)",
+            border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10,
+            padding: "12px 16px", marginBottom: 10,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div>
+              <div style={{ fontSize: 9, color: "var(--primary)", fontWeight: 800, letterSpacing: "0.12em", marginBottom: 3 }}>選択中の日付</div>
+              <div style={{ fontSize: 18, fontWeight: 900, color: "#ffffff" }}>
+                {selectedDate}{selectedDate === todayStr ? " 🌟 今日" : ""}
+              </div>
+            </div>
+            {canCreate && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-sm" style={{ background: "rgba(5,150,105,0.2)", border: "1.5px solid #34d399", color: "#6ee7b7", fontWeight: 700 }}
+                  onClick={() => { setShowMeetingForm(true); setShowProjectForm(false); }}>
+                  + 会議
+                </button>
+                <button className="btn btn-sm" style={{ background: "rgba(15,108,189,0.2)", border: "1.5px solid var(--primary)", color: "var(--primary)", fontWeight: 700 }}
+                  onClick={() => { setShowProjectForm(true); setShowMeetingForm(false); }}>
+                  + 案件
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* フォームはpage-enterの外で表示 */}
+
+          {/* その日のイベント一覧 */}
+          {selectedEvents.meetings.length === 0 && selectedEvents.projects.length === 0 && !showProjectForm && !showMeetingForm ? (
+            <div style={{
+              background: "white",
+              border: "1px solid var(--border)", borderRadius: 12,
+              padding: "20px", textAlign: "center",
+              boxShadow: "var(--shadow-card)",
+            }}>
+              <div style={{ fontSize: 28, marginBottom: 6 }}>📭</div>
+              <div style={{ fontSize: 13, color: "var(--text-muted)", fontWeight: 600 }}>この日の予定はありません</div>
+              {canCreate && <div style={{ fontSize: 11.5, color: "var(--gray-400)", marginTop: 4 }}>上のボタンから案件・会議を追加できます</div>}
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {selectedEvents.meetings.map(m => (
+                <div key={m.id}
+                  onClick={() =>  setPage("meeting-detail", m.id)}
+                  style={{
+                    background: "linear-gradient(145deg,#f0fdf4,#dcfce7)",
+                    border: "1.5px solid #6ee7b7", borderRadius: 12, padding: "13px 16px",
+                    cursor: "pointer", display: "flex", gap: 12, alignItems: "center",
+                    boxShadow: "0 2px 8px rgba(5,150,105,0.12)",
+                  }}>
+                  <div style={{ width: 42, height: 42, borderRadius: 10, background: "linear-gradient(135deg,#059669,#10b981)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>🏛</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 9.5, fontWeight: 800, color: "#059669", letterSpacing: "0.08em", marginBottom: 2 }}>会議 · {m.meeting_type}</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.meeting_name}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
+                      {fmtDateTime(m.meeting_datetime)}{m.location ? `　📍 ${m.location}` : ""}
+                    </div>
+                  </div>
+                  <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="var(--border)" strokeWidth="3"><path d="M9 18l6-6-6-6"/></svg>
+                </div>
+              ))}
+              {selectedEvents.projects.map(p => {
+                const isOver = p.due_date < todayStr && !["完了","中止"].includes(p.status);
+                return (
+                  <div key={p.id}
+                    onClick={() =>  setPage("project-detail", p.id)}
+                    style={{
+                      background: isOver ? "linear-gradient(145deg,#fef2f2,#fee2e2)"
+                        : p.status === "完了" ? "linear-gradient(145deg,#f0fdf4,#dcfce7)"
+                        : "linear-gradient(145deg,#fffbeb,#fef3c7)",
+                      border: `1.5px solid ${isOver ? "#fca5a5" : p.status === "完了" ? "#6ee7b7" : "#fcd34d"}`,
+                      borderRadius: 12, padding: "13px 16px",
+                      cursor: "pointer", display: "flex", gap: 12, alignItems: "center",
+                      boxShadow: "var(--shadow-card)",
+                    }}>
+                    <div style={{ width: 42, height: 42, borderRadius: 10, background: isOver ? "linear-gradient(135deg,#dc2626,#ef4444)" : p.status === "完了" ? "linear-gradient(135deg,#059669,#10b981)" : "linear-gradient(135deg,#d97706,#f59e0b)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
+                      {isOver ? "⚠️" : p.status === "完了" ? "🏆" : "📜"}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 9.5, fontWeight: 800, color: isOver ? "#dc2626" : p.status === "完了" ? "#059669" : "#d97706", letterSpacing: "0.08em", marginBottom: 2 }}>
+                        {isOver ? "⚠ 期限超過" : p.status === "完了" ? "✅ 完了" : "📅 期限日"} · {p.project_type}
+                      </div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.project_name}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>担当：{data.members.find(m => m.id === p.owner_member_id)?.name || "未設定"}</div>
+                    </div>
+                    <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+                      <StatusBadge status={p.status} config={PROJECT_STATUS_CONFIG} />
+                      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="var(--border)" strokeWidth="3"><path d="M9 18l6-6-6-6"/></svg>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 未選択時のガイド */}
+      {!selectedDate && (
+        <div style={{ textAlign: "center", padding: "12px 0 4px", color: "var(--text-muted)", flex: 1, fontSize: 12.5, fontWeight: 600 }}>
+          📅 日付をタップすると、その日の案件・会議が表示されます
+        </div>
+      )}
+      {showProjectForm && (
+        <ProjectFormModal
+          data={data}
+          onClose={() => setShowProjectForm(false)}
+          onSave={(form) => {
+            const newProj = { id: genId(), ...form, start_date: selectedDate || today, created_at: new Date().toISOString(), members: [], has_conflict_flag: false };
+            setData(d => ({ ...d, projects: [...d.projects, newProj] }));
+            setShowProjectForm(false);
+          }}
+        />
+      )}
+      {showMeetingForm && (
+        <MeetingFormModal
+          data={data}
+          onClose={() => setShowMeetingForm(false)}
+          onSave={(form) => {
+            const newMeeting = { id: genId(), ...form, meeting_datetime: form.meeting_datetime || `${selectedDate}T10:00`, created_by_member_id: null, attachments: [] };
+            setData(d => ({ ...d, meetings: [...d.meetings, newMeeting] }));
+            setShowMeetingForm(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// セクションヘッダー（ダッシュボード用）
+function SectionHeader({ icon, title, onMore, color }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <span style={{ fontSize: 16 }}>{icon}</span>
+        <span style={{ fontWeight: 800, fontSize: 13.5, color: color || "var(--text-primary)", letterSpacing: "0.01em" }}>{title}</span>
+      </div>
+      {onMore && (
+        <button className="btn btn-outline btn-sm" onClick={onMore}
+          style={{ fontSize: 11, padding: "3px 10px" }}>全て見る</button>
+      )}
+    </div>
+  );
+}
+
+
+function StatusBadge({ status, config }) {
+  const cfg = config[status] || { badge: "badge-gray" };
+  const icon = STATUS_ICONS[status] || "";
+  return <Badge className={cfg.badge}>{icon && <span style={{ marginRight: 2 }}>{icon}</span>}{status}</Badge>;
+}
+
+function Modal({ title, onClose, onConfirm, confirmLabel = "保存", confirmClass = "btn-primary", children }) {
+  const [boxStyle, setBoxStyle] = React.useState({});
+  React.useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      setBoxStyle({ maxHeight: Math.floor(vv.height * 0.88) + "px" });
+    };
+    vv.addEventListener("resize", update);
+    update();
+    return () => vv.removeEventListener("resize", update);
+  }, []);
+  return (
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="modal-box" style={boxStyle}>
+        <div className="modal-header">
+          <span className="modal-title">{title}</span>
+          <button className="btn btn-outline btn-sm btn-icon" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">{children}</div>
+        <div className="modal-footer">
+          {onConfirm ? (
+            <>
+              <button className="btn btn-outline" onClick={onClose}>キャンセル</button>
+              <button className={`btn ${confirmClass}`} onClick={onConfirm}>{confirmLabel}</button>
+            </>
+          ) : (
+            <button className="btn btn-outline" onClick={onClose}>閉じる</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// PAGES
+// ============================================================
+
+function Dashboard({ data, setPage, setDetailId, goBack}) {
+  const overdue = data.projects.filter(p => p.due_date && p.due_date < today && !["完了","中止"].includes(p.status));
+  const dueSoon = data.projects.filter(p => {
+    if (!p.due_date || ["完了","中止"].includes(p.status)) return false;
+    const diff = (new Date(p.due_date) - new Date(today)) / (1000*60*60*24);
+    return diff >= 0 && diff <= 7;
+  });
+  const pendingApprovals = data.approvals.filter(a => a.status === "承認待ち");
+  const activeProjects = data.projects.filter(p => !["完了","中止"].includes(p.status));
+  const completedCount = data.projects.filter(p => p.status === "完了").length;
+  const totalCount = data.projects.length;
+  const progress = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
+  const upcomingMeetings = [...data.meetings]
+    .sort((a,b) => new Date(b.meeting_datetime) - new Date(a.meeting_datetime))
+    .slice(0, 2);
+
+  // 優先度順に案件ソート：超過 > 期限近い > 実行中 > その他
+  const sortedProjects = [...activeProjects].sort((a, b) => {
+    const aOver = a.due_date && a.due_date < today ? 0 : 1;
+    const bOver = b.due_date && b.due_date < today ? 0 : 1;
+    if (aOver !== bOver) return aOver - bOver;
+    if (!a.due_date) return 1;
+    if (!b.due_date) return -1;
+    return a.due_date > b.due_date ? 1 : -1;
+  }).slice(0, 5);
+
+  return (
+    <div className="page-enter" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+
+      {/* ══════════════════════════════
+          ① 要対応バナー（最上部・最大サイズ）
+          ══════════════════════════════ */}
+      {(overdue.length > 0 || pendingApprovals.length > 0) && (
+        <section>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <div style={{ width: 4, height: 16, borderRadius: 2, background: "var(--danger)" }} />
+            <span style={{ fontSize: 11, fontWeight: 800, color: "var(--danger)", letterSpacing: "0.08em", textTransform: "uppercase" }}>🚨 要対応</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {overdue.map(p => (
+              <div key={p.id} className="alert alert-danger" onClick={() =>  setPage("project-detail", p.id)}
+                style={{ cursor: "pointer", justifyContent: "space-between" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, marginBottom: 2 }}>⚠ 期限超過</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{p.project_name}</div>
+                  <div style={{ fontSize: 11, marginTop: 2, opacity: 0.8 }}>期限：{fmtDate(p.due_date)}</div>
+                </div>
+                <span style={{ fontSize: 16, marginLeft: 8 }}>›</span>
+              </div>
+            ))}
+            {pendingApprovals.map(a => {
+              const proj = data.projects.find(p => p.id === a.project_id);
+              return (
+                <div key={a.id} className="alert alert-warning" onClick={() => setPage("approvals")}
+                  style={{ cursor: "pointer", justifyContent: "space-between" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, marginBottom: 2 }}>承認待ち・{a.approval_stage}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{proj?.project_name || a.title}</div>
+                    <div style={{ fontSize: 11, marginTop: 2, opacity: 0.8 }}>タップして審査</div>
+                  </div>
+                  <span style={{ fontSize: 16, marginLeft: 8 }}>›</span>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* ② 案件統計 */}
+      <div className="dashboard-grid">
+        {[
+          { label: "総案件数",  value: totalCount,  color: "var(--primary)",  bg: "var(--primary-light)",  num_color: "var(--primary)" },
+          { label: "実行中",    value: data.projects.filter(p=>p.status==="実行中").length, color: "var(--success)", bg: "var(--success-light)", num_color: "var(--success)" },
+          { label: "完了",      value: completedCount, color: "var(--teal)", bg: "var(--teal-pale)", num_color: "var(--teal)" },
+          { label: "期限超過",  value: overdue.length, color: overdue.length > 0 ? "var(--danger)" : "var(--gray-400)", bg: overdue.length > 0 ? "var(--danger-light)" : "var(--gray-100)", num_color: overdue.length > 0 ? "var(--danger)" : "var(--gray-400)" },
+        ].map(s => (
+          <div key={s.label} className="stat-card" onClick={() => setPage("projects")} style={{ cursor: "pointer" }}>
+            <div className="stat-value" style={{ color: s.num_color }}>{s.value}</div>
+            <div className="stat-label">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ══════════════════════════════
+          ④ 進行中案件一覧
+          ══════════════════════════════ */}
+      <section>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <div style={{ width: 4, height: 16, borderRadius: 2, background: "var(--teal)" }} />
+          <span style={{ fontSize: 11, fontWeight: 800, color: "var(--teal)", letterSpacing: "0.08em", textTransform: "uppercase" }}>📜 進行中案件</span>
+          <span style={{ background: "var(--teal-pale)", color: "var(--teal)", fontSize: 10, fontWeight: 800, padding: "1px 7px", borderRadius: 20, border: "1px solid #5eead4" }}>{activeProjects.length}件</span>
+          <button className="btn btn-outline btn-sm" onClick={() => setPage("projects")} style={{ marginLeft: "auto", fontSize: 11, padding: "3px 10px" }}>全て見る</button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {sortedProjects.map(p => {
+            const isOverdue = p.due_date && p.due_date < today;
+            return (
+              <div key={p.id} className="list-item-card"
+                style={{ borderLeft: `3px solid ${isOverdue ? "var(--danger)" : "var(--primary)"}` }}
+                onClick={() =>  setPage("project-detail", p.id)}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="list-item-title">{p.project_name}</div>
+                  <div className="list-item-sub">
+                    {p.project_type}
+                    {p.due_date && (
+                      <span style={{ marginLeft: 8, color: isOverdue ? "var(--danger)" : "var(--text-muted)", fontWeight: isOverdue ? 700 : 400 }}>
+                        {isOverdue ? `⚠ 期限超過：${fmtDate(p.due_date)}` : `期限：${fmtDate(p.due_date)}`}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+                  <StatusBadge status={p.status} config={PROJECT_STATUS_CONFIG} />
+                  <span className="chevron">›</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ══════════════════════════════
+          ⑤ 直近の会議
+          ══════════════════════════════ */}
+      <section>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <div style={{ width: 4, height: 16, borderRadius: 2, background: "var(--teal-light)" }} />
+          <span style={{ fontSize: 11, fontWeight: 800, color: "var(--teal)", letterSpacing: "0.08em", textTransform: "uppercase" }}>🏛️ 直近の会議</span>
+          <button className="btn btn-outline btn-sm" onClick={() => setPage("meetings")} style={{ marginLeft: "auto", fontSize: 11, padding: "3px 10px" }}>全て見る</button>
+        </div>
+        {upcomingMeetings.length === 0
+          ? <div style={{ fontSize: 12.5, color: "var(--text-muted)", padding: "10px 4px", fontWeight: 600 }}>予定されている会議はありません</div>
+          : upcomingMeetings.map(m => {
+              const daysFromNow = Math.ceil((new Date(m.meeting_datetime) - new Date()) / (1000*60*60*24));
+              const isToday = daysFromNow === 0;
+              const isSoon = daysFromNow > 0 && daysFromNow <= 3;
+              return (
+                <div key={m.id} style={{
+                  background: isToday ? "var(--success-light)" : "white",
+                  border: `1.5px solid ${isToday ? "#34d399" : "var(--border)"}`,
+                  borderRadius: 12, padding: "12px 14px", marginBottom: 7,
+                  display: "flex", gap: 12, alignItems: "center",
+                  boxShadow: isToday ? "0 2px 12px rgba(52,211,153,0.2)" : "var(--shadow-card)",
+                }}>
+                  <div style={{ width: 46, height: 46, borderRadius: 10, background: isToday ? "var(--success)" : "var(--teal-pale)", border: `1.5px solid ${isToday ? "#34d399" : "#5eead4"}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <span style={{ fontSize: 20, lineHeight: 1 }}>🏛</span>
+                    <span style={{ fontSize: 8, fontWeight: 800, color: isToday ? "white" : "var(--teal)", marginTop: 2 }}>{isToday ? "今日！" : isSoon ? `${daysFromNow}日後` : fmtDate(m.meeting_datetime).slice(5)}</span>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.meeting_name}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 3 }}>
+                      {fmtDateTime(m.meeting_datetime)}{m.location ? `　📍 ${m.location}` : ""}
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+        }
+      </section>
+
+    </div>
+  );
+}
+
+
+function MemberList({ data, setPage, setDetailId, currentUser, goBack}) {
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [showModal, setShowModal] = useState(false);
+  const [editMember, setEditMember] = useState(null);
+  const [members, setMembers] = useState(data.members);
+
+  const filtered = members.filter(m =>
+    (m.name.includes(search) || m.organization_name?.includes(search)) &&
+    (!roleFilter || m.role_type === roleFilter)
+  );
+
+  const handleSave = (formData) => {
+    if (editMember) {
+      setMembers(prev => prev.map(m => m.id === editMember.id ? { ...m, ...formData } : m));
+    } else {
+      setMembers(prev => [...prev, { id: genId(), ...formData, status: "active" }]);
+    }
+    setShowModal(false);
+    setEditMember(null);
+  };
+
+  return (
+    <div className="page-enter">
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <div className="search-box" style={{ flex: 1, minWidth: 0 }}>
+          <span className="search-icon">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          </span>
+          <input className="form-control" placeholder="氏名・所属で検索" value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 34 }} />
+        </div>
+        {["representative_director","vice_representative_director","secretariat"].includes(currentUser.role_type) && (
+          <button className="btn btn-primary" style={{ flexShrink: 0 }} onClick={() => { setEditMember(null); setShowModal(true); }}>
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            追加
+          </button>
+        )}
+      </div>
+      <div style={{ marginBottom: 14 }}>
+        <select className="form-control form-select" value={roleFilter} onChange={e => setRoleFilter(e.target.value)}>
+          <option value="">全権限区分</option>
+          {Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--gray-500)", marginBottom: 10 }}>{filtered.length} 名</div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state"><div className="empty-state-icon">👥</div><div className="empty-state-text">該当するメンバーがいません</div></div>
+      ) : (
+        filtered.map(m => (
+          <div key={m.id}
+            onClick={() =>  setPage("member-detail", m.id)}
+            style={{
+              background: "white", borderRadius: 12, border: "1px solid var(--gray-200)",
+              padding: "12px 14px", marginBottom: 8, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 12, boxShadow: "var(--shadow-xs)",
+            }}
+          >
+            {/* アバター */}
+            {m.photo
+              ? <img src={m.photo} alt={m.name} style={{ width: 44, height: 44, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+              : <div style={{ width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg, var(--teal), var(--teal-light))", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, flexShrink: 0 }}>{m.name.charAt(0)}</div>
+            }
+            {/* 情報 */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)" }}>{m.name}</span>
+                <span className={`status-dot ${m.status === "active" ? "status-active" : "status-inactive"}`} style={{ display: "inline-block", width: 6, height: 6, borderRadius: "50%", background: m.status === "active" ? "var(--green)" : "var(--gray-400)", flexShrink: 0 }}></span>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--gray-500)", marginBottom: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {m.position_name}{m.organization_name ? `・${m.organization_name}` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                <Badge className="badge-navy" style={{ fontSize: 10 }}>{ROLE_LABELS[m.role_type]}</Badge>
+                {m.committee_name && <Badge className="badge-teal" style={{ fontSize: 10 }}>{m.committee_name}</Badge>}
+              </div>
+            </div>
+            <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="var(--gray-300)" strokeWidth="2.5" style={{ flexShrink: 0 }}><path d="M9 18l6-6-6-6"/></svg>
+          </div>
+        ))
+      )}
+
+      {showModal && (
+        <MemberFormModal
+          member={editMember}
+          onClose={() => { setShowModal(false); setEditMember(null); }}
+          onSave={handleSave}
+        />
+      )}
+    </div>
+  );
+}
+
+function MemberDetail({ data, memberId, setPage, currentUser, goBack}) {
+  const member = data.members.find(m => m.id === memberId);
+  if (!member) return <div>メンバーが見つかりません</div>;
+  const myProjects = data.projects.filter(p => (p.members||[]).includes(memberId));
+  const myMeetings = data.meetings.slice(0, 3);
+
+  return (
+    <div className="page-enter">
+      <div className="back-bar"><button className="back-btn" onClick={goBack}>メンバー一覧</button></div>
+      <div className="detail-header">
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+          <div>
+            {member.photo
+              ? <img src={member.photo} alt={member.name} style={{ width: 72, height: 72, borderRadius: "50%", objectFit: "cover", border: "3px solid var(--gray-200)" }} />
+              : <div style={{ width: 72, height: 72, borderRadius: "50%", background: "var(--teal)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 700, border: "3px solid var(--gray-200)" }}>{member.name.charAt(0)}</div>
+            }
+          </div>
+          <div>
+            <div className="detail-title">{member.name}</div>
+            <div className="detail-meta">
+              <Badge className="badge-navy">{ROLE_LABELS[member.role_type]}</Badge>
+              <Badge className="badge-teal">{member.position_name}</Badge>
+              {member.committee_name && <Badge className="badge-gold">{member.committee_name}</Badge>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="detail-grid">
+        <div className="card">
+          <div className="card-header"><span className="card-title">基本情報</span></div>
+          <div className="card-body">
+            {[
+              ["所属法人", member.organization_name || "—"],
+              ["役職名", member.position_name],
+              ["所属部会", member.committee_name || "—"],
+              ["権限区分", ROLE_LABELS[member.role_type]],
+              ["在任期間", `${fmtDate(member.term_start_date)} 〜 ${member.term_end_date ? fmtDate(member.term_end_date) : "現在"}`],
+              ["状態", member.status === "active" ? "有効" : "無効"],
+            ].map(([l, v]) => (
+              <div key={l} style={{ marginBottom: 10 }}>
+                <div className="info-label">{l}</div>
+                <div className="info-value">{v}</div>
+              </div>
+            ))}
+            {member.notes && <div><div className="info-label">備考</div><div className="info-value">{member.notes}</div></div>}
+          </div>
+        </div>
+
+        <div>
+          <div className="card" style={{ marginBottom: 16 }}>
+            <div className="card-header"><span className="card-title">担当案件</span></div>
+            <div className="card-body">
+              {myProjects.length === 0
+                ? <div className="empty-state"><div className="empty-state-text">担当案件なし</div></div>
+                : myProjects.map(proj => (
+                    <div key={proj.id} style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--navy)" }}>{(proj.project_name||"").slice(0, 20)}</span>
+                      <StatusBadge status={proj.status} config={PROJECT_STATUS_CONFIG} />
+                    </div>
+                  ))
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemberFormModal({ member, onClose, onSave }) {
+  const [form, setForm] = useState(member || {
+    name: "", organization_name: "", position_name: "", committee_name: "",
+    role_type: "committee_officer", term_start_date: today, term_end_date: "", photo: null
+  });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <Modal title={member ? "メンバー編集" : "メンバー追加"} onClose={onClose} onConfirm={() => onSave(form)}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 16 }}>
+        <AvatarUpload value={form.photo} onChange={(v) => set("photo", v)} name={form.name} size={64} />
+        <div style={{ fontSize: 12, color: "var(--gray-500)" }}>クリックして<br/>写真をアップロード</div>
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">氏名 <span className="required">*</span></label><input className="form-control" value={form.name} onChange={e => set("name", e.target.value)} /></div>
+        <div className="form-group"><label className="form-label">所属法人</label><input className="form-control" value={form.organization_name} onChange={e => set("organization_name", e.target.value)} /></div>
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">役職名 <span className="required">*</span></label><input className="form-control" value={form.position_name} onChange={e => set("position_name", e.target.value)} /></div>
+        <div className="form-group"><label className="form-label">所属部会</label><input className="form-control" value={form.committee_name} onChange={e => set("committee_name", e.target.value)} /></div>
+      </div>
+      <div className="form-group"><label className="form-label">権限区分 <span className="required">*</span></label>
+        <select className="form-control form-select" value={form.role_type} onChange={e => set("role_type", e.target.value)}>
+          {Object.entries(ROLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">在任開始日</label><input type="date" className="form-control" value={form.term_start_date} onChange={e => set("term_start_date", e.target.value)} /></div>
+        <div className="form-group"><label className="form-label">在任終了日</label><input type="date" className="form-control" value={form.term_end_date} onChange={e => set("term_end_date", e.target.value)} /></div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---- PROJECTS ----
+function ProjectList({ data, setData, setPage, setDetailId, currentUser, goBack}) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [showModal, setShowModal] = useState(false);
+
+  const filtered = data.projects.filter(p =>
+    ((p.project_name||"").includes(search) || (p.project_code||"").includes(search)) &&
+    (!statusFilter || p.status === statusFilter) &&
+    (!typeFilter || p.project_type === typeFilter)
+  );
+
+  const handleSave = (formData) => {
+    const newProj = { id: genId(), project_code: `PRJ-${new Date().getFullYear()}-${String(data.projects.length + 1).padStart(3, "0")}`, ...formData, has_conflict_flag: false };
+    setData(d => ({ ...d, projects: [...d.projects, newProj] }));
+    setShowModal(false);
+  };
+
+  const canCreate = !["viewer"].includes(currentUser.role_type);
+
+  return (
+    <div className="page-enter">
+      {/* フィルターバー */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div className="search-box" style={{ flex: 1, minWidth: 0 }}>
+          <span className="search-icon">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          </span>
+          <input className="form-control" placeholder="案件名・番号で検索" value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 34 }} />
+        </div>
+        <select className="form-control form-select" style={{ width: 130, flexShrink: 0 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+          <option value="">全ステータス</option>
+          {Object.keys(PROJECT_STATUS_CONFIG).map(s => <option key={s}>{s}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <select className="form-control form-select" style={{ flex: 1 }} value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
+          <option value="">全案件種別</option>
+          {["行政対応案件","未来創造支援事業案件","研修事業案件","外部企業対応案件","会員向け施策案件","理事会検討案件","その他案件"].map(t => <option key={t}>{t}</option>)}
+        </select>
+        {canCreate && (
+          <button className="btn btn-primary" style={{ flexShrink: 0 }} onClick={() => setShowModal(true)}>
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            案件登録
+          </button>
+        )}
+      </div>
+
+      {/* 件数 */}
+      <div style={{ fontSize: 12, color: "var(--gray-500)", marginBottom: 10 }}>
+        {filtered.length} 件
+      </div>
+
+      {/* カード一覧 */}
+      {filtered.length === 0 ? (
+        <div className="empty-state"><div className="empty-state-icon">📋</div><div className="empty-state-text">該当する案件がありません</div></div>
+      ) : (
+        filtered.map(p => {
+          const owner = data.members.find(m => m.id === p.owner_member_id);
+          const isOverdue = p.due_date && p.due_date < today && !["完了","中止"].includes(p.status);
+          return (
+            <div key={p.id}
+              onClick={() =>  setPage("project-detail", p.id)}
+              style={{
+                background: "white", borderRadius: 12, border: `1px solid ${isOverdue ? "#fecaca" : "var(--gray-200)"}`,
+                padding: "14px 16px", marginBottom: 10, cursor: "pointer",
+                boxShadow: isOverdue ? "0 1px 4px rgba(220,38,38,0.08)" : "var(--shadow-xs)",
+                transition: "box-shadow 0.15s",
+              }}
+            >
+              {/* 上段：ステータス + COI */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <StatusBadge status={p.status} config={PROJECT_STATUS_CONFIG} />
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {p.has_conflict_flag && <span className="coi-flag coi-yes" style={{ fontSize: 10 }}>⚠ COI</span>}
+                  <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="var(--gray-300)" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
+                </div>
+              </div>
+              {/* 案件名 */}
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", lineHeight: 1.4, marginBottom: 8 }}>
+                {p.project_name}
+              </div>
+              {/* 下段メタ */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px", fontSize: 11.5, color: "var(--gray-500)" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a2 2 0 012-2z"/></svg>
+                  {p.project_type}
+                </span>
+                <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                  {owner?.name || "未設定"}
+                </span>
+                {p.due_date && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 3, color: isOverdue ? "var(--red)" : "var(--gray-500)", fontWeight: isOverdue ? 700 : 400 }}>
+                    <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                    {isOverdue && "期限超過・"}{fmtDate(p.due_date)}
+                  </span>
+                )}
+                <span style={{ color: "var(--gray-400)", fontSize: 10.5, marginLeft: "auto" }}>{p.project_code}</span>
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      {showModal && (
+        <ProjectFormModal
+          data={data}
+          onClose={() => setShowModal(false)}
+          onSave={handleSave}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProjectDetail({ data, setData, projectId, setPage, setDetailId, currentUser, goBack}) {
+  const [activeTab, setActiveTab] = useState("overview");
+  const [showConflictModal, setShowConflictModal] = useState(false);
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+
+  const project = data.projects.find(p => p.id === projectId);
+  if (!project) return <div>案件が見つかりません</div>;
+
+  const owner = data.members.find(m => m.id === project.owner_member_id);
+  const proposer = data.members.find(m => m.id === project.proposer_id);
+  const approver = data.members.find(m => m.id === project.approver_id);
+  const members = (project.members||[]).map(mid => data.members.find(m => m.id === mid)).filter(Boolean);
+  const relMeetings = data.meetings.filter(m => data.meetings.some(() => true)).slice(0, 2);
+  const relApprovals = data.approvals.filter(a => a.project_id === projectId);
+  const relConflicts = data.conflicts.filter(c => c.project_id === projectId);
+
+  const canSeeConflicts = ["representative_director","vice_representative_director","director"].includes(currentUser.role_type);
+
+  const handleConflictSave = async (formData) => {
+    const newConflict = { id: genId(), project_id: projectId, ...formData, declared_at: new Date().toISOString().split("T")[0] };
+    try { await sb.insert("conflicts", newConflict); await sb.update("projects", projectId, { has_conflict_flag: true }); } catch(e) { console.error(e); }
+    setData(d => ({ ...d, conflicts: [...d.conflicts, newConflict], projects: d.projects.map(p => p.id === projectId ? { ...p, has_conflict_flag: true } : p) }));
+    setShowConflictModal(false);
+  };
+
+  const handleApprovalSave = async (formData) => {
+    const newApproval = { id: genId(), project_id: projectId, ...formData, status: "承認待ち", request_date: new Date().toISOString().split("T")[0] };
+    try { await sb.insert("approvals", newApproval); } catch(e) { console.error(e); }
+    setData(d => ({ ...d, approvals: [...d.approvals, newApproval] }));
+    setShowApprovalModal(false);
+  };
+
+  return (
+    <div className="page-enter">
+      <div className="back-bar"><button className="back-btn" onClick={goBack}>案件一覧</button></div>
+      <div className="detail-header">
+        <div>
+          <div className="detail-title">{project.project_name}</div>
+          <div className="detail-meta" style={{ marginTop: 6 }}>
+            <StatusBadge status={project.status} config={PROJECT_STATUS_CONFIG} />
+            <Badge className="badge-gray">{project.project_type}</Badge>
+            {project.has_conflict_flag && <span className="coi-flag coi-yes">⚠️ COIあり</span>}
+          </div>
+        </div>
+      </div>
+
+      {project.summary && (
+        <div className="alert alert-info" style={{ marginBottom: 16 }}>
+          <span>📄</span><span>{project.summary}</span>
+        </div>
+      )}
+
+      <div className="tabs">
+        {[["overview","概要"], ["members","関係者"], ["meetings","会議"], ["approvals","承認フロー"], ...(canSeeConflicts ? [["conflicts","COI"]] : [])].map(([k, v]) => (
+          <div key={k} className={`tab-item ${activeTab === k ? "active" : ""}`} onClick={() => setActiveTab(k)}>{v}</div>
+        ))}
+      </div>
+
+      {activeTab === "overview" && (
+        <div>
+          <div className="detail-grid">
+          <div className="card">
+            <div className="card-header"><span className="card-title">案件情報</span></div>
+            <div className="card-body">
+              {[["起案者", proposer?.name || "—"], ["主担当", owner?.name || "—"], ["最終決裁者", approver?.name || "—"], ["期限", fmtDate(project.due_date)], ["次のアクション", project.next_action || "—"]].map(([l, v]) => (
+                <div key={l} style={{ marginBottom: 10 }}>
+                  <div className="info-label">{l}</div>
+                  <div className="info-value">{v}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><span className="card-title">承認状況</span></div>
+            <div className="card-body">
+              {relApprovals.length === 0 ? (
+                <div className="empty-state"><div className="empty-state-text">承認申請なし</div></div>
+              ) : relApprovals.map(a => {
+                const req = data.members.find(m => m.id === a.proposer_id);
+                const appr = data.members.find(m => m.id === a.approver_id);
+                return (
+                  <div key={a.id} style={{ marginBottom: 12, padding: "10px", background: "var(--gray-50)", borderRadius: "var(--radius-sm)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, fontWeight: 700 }}>{a.approval_stage}</span>
+                      <StatusBadge status={a.status} config={APPROVAL_STATUS_CONFIG} />
+                    </div>
+                    <div className="approval-flow">
+                      <div className="flow-step">
+                        <div className={`flow-circle ${a.status !== "起案" ? "flow-done" : "flow-pending"}`}>起</div>
+                        <div className="flow-label">{req?.name?.split(" ")[1] || req?.name}</div>
+                      </div>
+                      <div className="flow-arrow">→</div>
+                      <div className="flow-step">
+                        <div className={`flow-circle ${["承認待ち","承認済","差戻し","完了"].includes(a.status) ? "flow-done" : "flow-waiting"}`}>確</div>
+                        <div className="flow-label">確認者</div>
+                      </div>
+                      <div className="flow-arrow">→</div>
+                      <div className="flow-step">
+                        <div className={`flow-circle ${a.status === "承認済" || a.status === "完了" ? "flow-done" : a.status === "差戻し" ? "flow-rejected" : "flow-waiting"}`}>承</div>
+                        <div className="flow-label">{appr?.name?.split(" ")[1] || appr?.name}</div>
+                      </div>
+                    </div>
+                    {a.rejected_reason && (
+                      <div className="alert alert-danger" style={{ marginTop: 8, fontSize: 11 }}>
+                        差戻し理由：{a.rejected_reason}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          </div>
+          {project.attachments && project.attachments.length > 0 && (
+            <div className="card" style={{ marginTop: 16 }}>
+              <div className="card-header"><span className="card-title">📎 添付資料</span></div>
+              <div className="card-body"><AttachmentViewer attachments={project.attachments} /></div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "members" && (
+        <div className="card">
+          <div className="card-header"><span className="card-title">関係者一覧</span></div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead><tr><th>氏名</th><th>所属法人</th><th>役割</th></tr></thead>
+              <tbody>
+                {members.map(pm => {
+                  const mem = data.members.find(m => m.id === pm.member_id);
+                  return mem ? (
+                    <tr key={pm.id}>
+                      <td><span className="table-link" onClick={() =>  setPage("member-detail", mem.id)}>{mem.name}</span></td>
+                      <td>{mem.organization_name}</td>
+                      <td><Badge className="badge-teal">{pm.relation_type}</Badge></td>
+                    </tr>
+                  ) : null;
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "meetings" && (
+        <div className="card">
+          <div className="card-header"><span className="card-title">関連会議</span></div>
+          <div className="card-body">
+            {relMeetings.length === 0 ? <div className="empty-state"><div className="empty-state-text">関連会議なし</div></div> :
+              relMeetings.map(m => (
+                <div key={m.id} style={{ marginBottom: 10, padding: "10px", background: "var(--gray-50)", borderRadius: "var(--radius-sm)" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13 }}>{m.meeting_name}</div>
+                  <div style={{ fontSize: 11, color: "var(--gray-500)", marginTop: 2 }}>{fmtDateTime(m.meeting_datetime)} / {m.location}</div>
+                </div>
+              ))
+            }
+          </div>
+        </div>
+      )}
+
+      {activeTab === "approvals" && (
+        <div>
+          {!["viewer","committee_officer"].includes(currentUser.role_type) && (
+            <div style={{ marginBottom: 12 }}>
+              <button className="btn btn-primary" style={{ width: "100%" }} onClick={() => setShowApprovalModal(true)}>
+                ＋ 承認申請を起票する
+              </button>
+            </div>
+          )}
+          <div className="timeline">
+          {relApprovals.length === 0 ? <div className="empty-state"><div className="empty-state-icon">📋</div><div className="empty-state-text">承認履歴なし</div></div> :
+            relApprovals.map(a => {
+              const req = data.members.find(m => m.id === a.proposer_id);
+              return (
+                <div key={a.id} className="timeline-item">
+                  <div className={`timeline-dot ${a.status === "承認済" ? "approved" : a.status === "差戻し" ? "rejected" : ""}`}>
+                    {a.status === "承認済" ? "✓" : a.status === "差戻し" ? "✕" : "⏳"}
+                  </div>
+                  <div className="timeline-content">
+                    <div className="timeline-title">{a.approval_stage} — <StatusBadge status={a.status} config={APPROVAL_STATUS_CONFIG} /></div>
+                    <div className="timeline-time">起案：{req?.name} / {fmtDateTime(a.request_date)}</div>
+                    {a.comment && <div className="timeline-note">{a.comment}</div>}
+                    {a.rejected_reason && <div className="timeline-note" style={{ borderLeftColor: "var(--red)" }}>差戻し：{a.rejected_reason}</div>}
+                  </div>
+                </div>
+              );
+            })
+          }
+        </div>
+        </div>
+      )}
+
+      {activeTab === "conflicts" && canSeeConflicts && (
+        <div className="card">
+          <div className="card-header">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span className="card-title">COI申告</span>
+              {!["viewer","committee_officer"].includes(currentUser.role_type) && (
+                <button className="btn btn-outline btn-sm" onClick={() => setShowConflictModal(true)}>＋ 申告追加</button>
+              )}
+            </div>
+            <div className="alert alert-warning" style={{ margin: 0, fontSize: 11 }}>⚠️ この情報は権限者のみ閲覧できます</div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead><tr><th>当事者</th><th>所属法人</th><th>利害関係</th><th>審議参加</th><th>決議参加</th><th>申告日</th></tr></thead>
+              <tbody>
+                {relConflicts.map(c => {
+                  const mem = data.members.find(m => m.id === c.member_id);
+                  return (
+                    <tr key={c.id}>
+                      <td>{mem?.name}</td>
+                      <td>{c.organization_name}</td>
+                      <td>{c.self_interest_flag ? <span className="coi-flag coi-yes">あり</span> : <span className="coi-flag coi-no">なし</span>}</td>
+                      <td>{c.join_discussion_flag ? "✓ 可" : "✕ 不可"}</td>
+                      <td>{c.join_vote_flag ? "✓ 可" : "✕ 不可"}</td>
+                      <td style={{ fontSize: 11 }}>{fmtDate(c.declared_at)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showConflictModal && (
+        <ConflictFormModal
+          data={data}
+          projectId={projectId}
+          onClose={() => setShowConflictModal(false)}
+          onSave={handleConflictSave}
+        />
+      )}
+
+      {showApprovalModal && (
+        <ApprovalFormModal
+          data={data}
+          projectId={projectId}
+          currentUser={currentUser}
+          onClose={() => setShowApprovalModal(false)}
+          onSave={handleApprovalSave}
+        />
+      )}
+    </div>
+  );
+}
+
+function ProjectFormModal({ data, onClose, onSave }) {
+  const [form, setForm] = useState({ project_name: "", project_type: "研修事業案件", proposer_member_id: "", owner_member_id: "", status: "起案済", next_action: "", due_date: "", summary: "", attachments: [] });
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  return (
+    <Modal title="案件登録" onClose={onClose} onConfirm={() => form.project_name && onSave(form)}>
+      <div className="form-group"><label className="form-label">案件名 <span className="required">*</span></label><input className="form-control" value={form.project_name} onChange={e => set("project_name", e.target.value)} /></div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">案件種別 <span className="required">*</span></label>
+          <select className="form-control form-select" value={form.project_type} onChange={e => set("project_type", e.target.value)}>
+            {["行政対応案件","未来創造支援事業案件","研修事業案件","外部企業対応案件","会員向け施策案件","理事会検討案件","その他案件"].map(t => <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="form-group"><label className="form-label">ステータス</label>
+          <select className="form-control form-select" value={form.status} onChange={e => set("status", e.target.value)}>
+            {Object.keys(PROJECT_STATUS_CONFIG).map(s => <option key={s}>{s}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">起案者</label>
+          <select className="form-control form-select" value={form.proposer_member_id} onChange={e => set("proposer_member_id", e.target.value)}>
+            <option value="">選択してください</option>
+            {data.members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+        <div className="form-group"><label className="form-label">主担当</label>
+          <select className="form-control form-select" value={form.owner_member_id} onChange={e => set("owner_member_id", e.target.value)}>
+            <option value="">選択してください</option>
+            {data.members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="form-row">
+        <div className="form-group"><label className="form-label">期限</label><input type="date" className="form-control" value={form.due_date} onChange={e => set("due_date", e.target.value)} /></div>
+        <div className="form-group"><label className="form-label">次のアクション</label><input className="form-control" value={form.next_action} onChange={e => set("next_action", e.target.value)} /></div>
+      </div>
+      <div className="form-group"><label className="form-label">案件概要</label><textarea className="form-control form-textarea" value={form.summary} onChange={e => set("summary", e.target.value)} /></div>
+      <div className="form-group">
+        <label className="form-label">添付資料</label>
+        <AttachmentUpload attachments={form.attachments} onChange={(v) => set("attachments", v)} />
+      </div>
+    </Modal>
+  );
+}
+
+// ---- MEETINGS ----
+function MeetingList({ data, setData, setPage, setDetailId, currentUser, goBack}) {
+  const [search, setSearch] = useState("");
+  const [showModal, setShowModal] = useState(false);
+
+  const filtered = data.meetings.filter(m => m.meeting_name.includes(search) || m.meeting_type.includes(search));
+
+  const handleSave = async (formData) => {
+    const newMeeting = { id: genId(), ...formData, created_by_member_id: currentUser.id };
+    try { await sb.insert("meetings", newMeeting); } catch(e) { console.error(e); }
+    setData(d => ({ ...d, meetings: [...d.meetings, newMeeting] }));
+    setShowModal(false);
+  };
+
+  const canCreate = !["viewer"].includes(currentUser.role_type);
+
+  return (
+    <div className="page-enter">
+      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+        <div className="search-box" style={{ flex: 1, minWidth: 0 }}>
+          <span className="search-icon">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+          </span>
+          <input className="form-control" placeholder="会議名・種別で検索" value={search} onChange={e => setSearch(e.target.value)} style={{ paddingLeft: 34 }} />
+        </div>
+        {canCreate && (
+          <button className="btn btn-primary" style={{ flexShrink: 0 }} onClick={() => setShowModal(true)}>
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14"/></svg>
+            記録作成
+          </button>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12, color: "var(--gray-500)", marginBottom: 10 }}>{filtered.length} 件</div>
+
+      {filtered.length === 0 ? (
+        <div className="empty-state"><div className="empty-state-icon">🗓️</div><div className="empty-state-text">会議記録がありません</div></div>
+      ) : (
+        filtered.map(m => (
+          <div key={m.id}
+            onClick={() =>  setPage("meeting-detail", m.id)}
+            style={{
+              background: "white", borderRadius: 12, border: "1px solid var(--gray-200)",
+              padding: "14px 16px", marginBottom: 10, cursor: "pointer", boxShadow: "var(--shadow-xs)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", marginBottom: 6, lineHeight: 1.4 }}>
+                  {m.meeting_name}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px", fontSize: 11.5, color: "var(--gray-500)" }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                    <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+                    {fmtDateTime(m.meeting_datetime)}
+                  </span>
+                  {m.location && (
+                    <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                      <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                      {m.location}
+                    </span>
+                  )}
+                </div>
+                {m.decisions && (
+                  <div style={{ marginTop: 8, fontSize: 12, color: "var(--gray-600)", borderTop: "1px solid var(--gray-100)", paddingTop: 8, lineHeight: 1.5 }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: "var(--teal)", textTransform: "uppercase", letterSpacing: "0.06em" }}>決定事項　</span>
+                    {m.decisions.slice(0, 60)}{m.decisions.length > 60 ? "…" : ""}
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6, flexShrink: 0 }}>
+                <Badge className="badge-navy" style={{ fontSize: 10 }}>{m.meeting_type}</Badge>
+                <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="var(--gray-300)" strokeWidth="2.5"><path d="M9 18l6-6-6-6"/></svg>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+
+      {showModal && <MeetingFormModal data={data} onClose={() => setShowModal(false)} onSave={handleSave} />}
+    </div>
+  );
+}
+
+function MeetingDetail({ data, meetingId, setPage, currentUser, goBack}) {
+  const meeting = data.meetings.find(m => m.id === meetingId);
+  if (!meeting) return <div>会議が見つかりません</div>;
+
+  const creator = data.members.find(m => m.id === meeting.created_by_member_id);
+
+  return (
+    <div className="page-enter">
+      <div className="back-bar"><button className="back-btn" onClick={goBack}>会議一覧</button></div>
+      <div className="detail-header">
+        <div>
+          <div className="detail-title">{meeting.meeting_name}</div>
+          <div className="detail-meta">
+            <Badge className="badge-navy">{meeting.meeting_type}</Badge>
+            <span style={{ fontSize: 12, color: "var(--gray-500)" }}>{fmtDateTime(meeting.meeting_datetime)}</span>
+            {meeting.location && <span style={{ fontSize: 12, color: "var(--gray-500)" }}>📍 {meeting.location}</span>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "20px" }}>
+        <div>
+          {meeting.agenda && (
+            <div className="card" style={{ marginBottom: 16 }}>
+              <div className="card-header"><span className="card-title">📋 議題</span></div>
+              <div className="card-body"><pre style={{ fontSize: 13, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{meeting.agenda}</pre></div>
+
+```
+        </div>
+      )}
+      {meeting.decisions && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header"><span className="card-title">✅ 決定事項</span></div>
+          <div className="card-body"><pre style={{ fontSize: 13, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{meeting.decisions}</pre></div>
+        </div>
+      )}
+      {meeting.pending_items && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header"><span className="card-title">⏸️ 保留事項</span></div>
+          <div className="card-body"><pre style={{ fontSize: 13, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{meeting.pending_items}</pre></div>
+        </div>
+      )}
+    </div>
+    <div>
+      {meeting.action_items && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="card-header"><span className="card-title">📌 宿題・アクション</span></div>
+          <div className="card-body"><pre style={{ fontSize: 13, whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{meeting.action_items}</pre></div>
+        </div>
+      )}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card-header"><span className="card-title">次回予定</span></div>
+        <div className="card-body">
+          <div className="info-label">次回対応者</div>
+          <div className="info-value" style={{ marginBottom: 8 }}>{meeting.next_owner || "—"}</div>
+          <div className="info-label">次回予定</div>
+          <div className="info-value">{meeting.next_schedule || "—"}</div>
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header"><span className="card-title">記録者</span></div>
+        <div className="card-body">
+          <div className="info-value">{creator?.name || "—"}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {meeting.attachments && meeting.attachments.length > 0 && (
+    <div className="card" style={{ marginTop: 16 }}>
+      <div className="card-header"><span className="card-title">📎 添付資料</span></div>
+      <div className="card-body"><AttachmentViewer attachments={meeting.attachments} /></div>
+    </div>
+  )}
+</div>
+```
+
+);
+}
+
+function MeetingFormModal({ data, onClose, onSave }) {
+const [form, setForm] = useState({ meeting_name: “”, meeting_type: “理事会”, meeting_datetime: “”, location: “”, agenda: “”, decisions: “”, pending_items: “”, action_items: “”, next_owner: “”, next_schedule: “”, attachments: [] });
+const set = (k, v) => setForm(f => ({ …f, [k]: v }));
+return (
+<Modal title=“会議記録作成” onClose={onClose} onConfirm={() => form.meeting_name && onSave(form)}>
+<div className="form-group"><label className="form-label">会議名 <span className="required">*</span></label><input className=“form-control” value={form.meeting_name} onChange={e => set(“meeting_name”, e.target.value)} /></div>
+<div className="form-row">
+<div className="form-group"><label className="form-label">会議種別</label>
+<select className=“form-control form-select” value={form.meeting_type} onChange={e => set(“meeting_type”, e.target.value)}>
+{[“理事会”,“部会”,“未来創造支援事業会議”,“外部協議”,“臨時会議”,“打ち合わせ”].map(t => <option key={t}>{t}</option>)}
+</select>
+</div>
+<div className="form-group"><label className="form-label">開催日時 <span className="required">*</span></label><input type=“datetime-local” className=“form-control” value={form.meeting_datetime} onChange={e => set(“meeting_datetime”, e.target.value)} /></div>
+</div>
+<div className="form-group"><label className="form-label">開催場所</label><input className=“form-control” value={form.location} onChange={e => set(“location”, e.target.value)} /></div>
+<div className="form-group"><label className="form-label">議題</label><textarea className=“form-control form-textarea” value={form.agenda} onChange={e => set(“agenda”, e.target.value)} /></div>
+<div className="form-group"><label className="form-label">決定事項</label><textarea className=“form-control form-textarea” value={form.decisions} onChange={e => set(“decisions”, e.target.value)} /></div>
+<div className="form-group"><label className="form-label">保留事項</label><textarea className=“form-control form-textarea” style={{ minHeight: 60 }} value={form.pending_items} onChange={e => set(“pending_items”, e.target.value)} /></div>
+<div className="form-group"><label className="form-label">宿題・アクションアイテム</label><textarea className=“form-control form-textarea” value={form.action_items} onChange={e => set(“action_items”, e.target.value)} /></div>
+<div className="form-row">
+<div className="form-group"><label className="form-label">次回対応者</label><input className=“form-control” value={form.next_owner} onChange={e => set(“next_owner”, e.target.value)} /></div>
+<div className="form-group"><label className="form-label">次回予定</label><input className=“form-control” value={form.next_schedule} onChange={e => set(“next_schedule”, e.target.value)} /></div>
+</div>
+<div className="form-group">
+<label className="form-label">添付資料</label>
+<AttachmentUpload attachments={form.attachments} onChange={(v) => set(“attachments”, v)} />
+</div>
+</Modal>
+);
+}
+
+// –– APPROVALS ––
+function ApprovalList({ data, setData, setPage, setDetailId, currentUser, goBack}) {
+const [statusFilter, setStatusFilter] = useState(””);
+const [showDetail, setShowDetail] = useState(null);
+
+const filtered = data.approvals.filter(a => !statusFilter || a.status === statusFilter);
+
+const handleApprove = async (approvalId, comment) => {
+const patch = { status: “承認済”, approve_date: new Date().toISOString().split(“T”)[0], approver_comment: comment };
+try { await sb.update(“approvals”, approvalId, patch); } catch(e) { console.error(e); }
+setData(d => ({ …d, approvals: d.approvals.map(a => a.id === approvalId ? { …a, …patch } : a) }));
+setShowDetail(null);
+};
+
+const handleReject = async (approvalId, reason) => {
+const patch = { status: “差戻し”, approver_comment: reason };
+try { await sb.update(“approvals”, approvalId, patch); } catch(e) { console.error(e); }
+setData(d => ({ …d, approvals: d.approvals.map(a => a.id === approvalId ? { …a, …patch } : a) }));
+setShowDetail(null);
+};
+
+const canApprove = [“representative_director”,“vice_representative_director”,“director”].includes(currentUser.role_type);
+
+return (
+<div className="page-enter">
+<div className="back-bar"><button className="back-btn" onClick={goBack}>ダッシュボード</button></div>
+{/* フィルター＋件数 */}
+<div style={{ display: “flex”, alignItems: “center”, gap: 10, marginBottom: 14 }}>
+<select className=“form-control form-select” style={{ flex: 1 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+<option value="">全ステータス</option>
+{Object.keys(APPROVAL_STATUS_CONFIG).map(s => <option key={s}>{s}</option>)}
+</select>
+{filtered.filter(a => a.status === “承認待ち”).length > 0 && (
+<span style={{ flexShrink: 0, background: “var(–red)”, color: “white”, fontSize: 11, fontWeight: 700, padding: “3px 10px”, borderRadius: 20 }}>
+{filtered.filter(a => a.status === “承認待ち”).length}件 要対応
+</span>
+)}
+</div>
+
+```
+  {/* カード一覧 */}
+  {filtered.length === 0 ? (
+    <div className="empty-state"><div className="empty-state-icon">✅</div><div className="empty-state-text">承認案件はありません</div></div>
+  ) : (
+    filtered.map(a => {
+      const proj = data.projects.find(p => p.id === a.project_id);
+      const req = data.members.find(m => m.id === a.proposer_id);
+      const appr = data.members.find(m => m.id === a.approver_id);
+      const isPending = a.status === "承認待ち";
+      const isRejected = a.status === "差戻し";
+      return (
+        <div key={a.id}
+          onClick={() => setShowDetail(a)}
+          style={{
+            background: "white",
+            borderRadius: 12,
+            border: `1px solid ${isPending ? "#ddd6fe" : isRejected ? "#fecaca" : "var(--gray-200)"}`,
+            borderLeft: `4px solid ${isPending ? "var(--violet)" : isRejected ? "var(--red)" : a.status === "承認済" ? "var(--green)" : "var(--gray-300)"}`,
+            padding: "14px 16px",
+            marginBottom: 10,
+            cursor: "pointer",
+            boxShadow: isPending ? "0 2px 8px rgba(124,58,237,0.08)" : "var(--shadow-xs)",
+          }}
+        >
+          {/* 上段：ステータス + 日付 */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <StatusBadge status={a.status} config={APPROVAL_STATUS_CONFIG} />
+            <span style={{ fontSize: 11, color: "var(--gray-400)" }}>{fmtDate(a.request_date)}</span>
+          </div>
+
+          {/* 案件名 */}
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--navy)", lineHeight: 1.4, marginBottom: 10 }}>
+            {proj?.project_name}
+          </div>
+
+          {/* メタ情報行 */}
+          <div style={{ display: "flex", gap: 12, fontSize: 12, color: "var(--gray-600)", flexWrap: "wrap" }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 10, background: "var(--gray-100)", padding: "1px 6px", borderRadius: 4, fontWeight: 600, color: "var(--gray-600)" }}>{a.approval_stage}</span>
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+              <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+              起案：{req?.name}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 3 }}>
+              <svg width="11" height="11" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              承認者：{appr?.name}
+            </span>
+          </div>
+
+          {/* 審査ボタン（承認待ちのみ） */}
+          {canApprove && isPending && (
+            <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--gray-100)" }}>
+              <button className="btn btn-primary btn-sm" style={{ width: "100%" }}
+                onClick={e => { e.stopPropagation(); setShowDetail(a); }}>
+                <svg width="13" height="13" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                審査・承認する
+              </button>
+            </div>
+          )}
+          {isRejected && a.rejected_reason && (
+            <div style={{ marginTop: 10, background: "#fef2f2", borderRadius: 6, padding: "6px 10px", fontSize: 11.5, color: "var(--red)" }}>
+              差戻し理由：{a.rejected_reason}
+            </div>
+          )}
+        </div>
+      );
+    })
+  )}
+
+  {showDetail && (
+    <ApprovalDetailModal
+      approval={showDetail}
+      data={data}
+      canApprove={canApprove}
+      onApprove={handleApprove}
+      onReject={handleReject}
+      onClose={() => setShowDetail(null)}
+    />
+  )}
+</div>
+```
+
+);
+}
+
+function ApprovalDetailModal({ approval, data, canApprove, onApprove, onReject, onClose }) {
+const [comment, setComment] = useState(approval.comment || “”);
+const [rejectReason, setRejectReason] = useState(””);
+const [mode, setMode] = useState(“view”); // view | approve | reject
+
+const proj = data.projects.find(p => p.id === approval.project_id);
+const req = data.members.find(m => m.id === approval.proposer_id);
+const checker = data.members.find(m => m.id === approval.checker_member_id);
+const appr = data.members.find(m => m.id === approval.approver_id);
+
+return (
+<Modal title="承認詳細" onClose={onClose} onConfirm={null}>
+<div style={{ marginBottom: 12 }}>
+<div style={{ fontSize: 11, color: “var(–gray-500)” }}>対象案件</div>
+<div style={{ fontWeight: 700, color: “var(–navy)”, marginTop: 2 }}>{proj?.project_name}</div>
+</div>
+<div className=“detail-grid” style={{ marginBottom: 16 }}>
+{[[“段階”, approval.approval_stage], [“起案者”, req?.name], [“確認者”, checker?.name || “—”], [“承認者”, appr?.name]].map(([l, v]) => (
+<div key={l}><div className="info-label">{l}</div><div className="info-value">{v}</div></div>
+))}
+</div>
+<div style={{ marginBottom: 12 }}>
+<div className="info-label">現在の状態</div>
+<StatusBadge status={approval.status} config={APPROVAL_STATUS_CONFIG} />
+</div>
+
+```
+  {approval.rejected_reason && (
+    <div className="alert alert-danger">差戻し理由：{approval.rejected_reason}</div>
+  )}
+
+  {approval.comment && (
+    <div className="alert alert-info">コメント：{approval.comment}</div>
+  )}
+
+  {canApprove && approval.status === "承認待ち" && (
+    <div>
+      <div className="form-group"><label className="form-label">コメント</label><textarea className="form-control form-textarea" style={{ minHeight: 60 }} value={comment} onChange={e => setComment(e.target.value)} /></div>
+      {mode === "reject" && (
+        <div className="form-group">
+          <label className="form-label">差戻し理由 <span className="required">*</span></label>
+          <textarea className="form-control form-textarea" style={{ minHeight: 60 }} value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="差戻しの理由を入力してください" />
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <button className="btn btn-danger" onClick={() => mode === "reject" ? onReject(approval.id, rejectReason) : setMode("reject")}>
+          {mode === "reject" ? "差戻しを確定" : "差戻し"}
+        </button>
+        <button className="btn btn-primary" onClick={() => onApprove(approval.id, comment)}>承認する</button>
+      </div>
+    </div>
+  )}
+
+  <div style={{ marginTop: 16, textAlign: "right" }}>
+    <button className="btn btn-outline" onClick={onClose}>閉じる</button>
+  </div>
+</Modal>
+```
+
+);
+}
+
+function ApprovalFormModal({ data, projectId, currentUser, onClose, onSave }) {
+const [form, setForm] = useState({ proposer_id: currentUser.id, checker_member_id: “”, approver_id: “”, approval_stage: “承認フロー”, comment: “” });
+const set = (k, v) => setForm(f => ({ …f, [k]: v }));
+return (
+<Modal title=“承認申請” onClose={onClose} onConfirm={() => onSave(form)}>
+<div className="form-group"><label className="form-label">承認段階</label>
+<select className=“form-control form-select” value={form.approval_stage} onChange={e => set(“approval_stage”, e.target.value)}>
+{[“事前確認”,“承認フロー”,“最終承認”,“実施承認”].map(s => <option key={s}>{s}</option>)}
+</select>
+</div>
+<div className="form-group"><label className="form-label">確認者</label>
+<select className=“form-control form-select” value={form.checker_member_id} onChange={e => set(“checker_member_id”, e.target.value)}>
+<option value="">選択してください（任意）</option>
+{data.members.filter(m => ![“viewer”].includes(m.role_type)).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+</select>
+</div>
+<div className="form-group"><label className="form-label">承認者 <span className="required">*</span></label>
+<select className=“form-control form-select” value={form.approver_id} onChange={e => set(“approver_id”, e.target.value)}>
+<option value="">選択してください</option>
+{data.members.filter(m => [“representative_director”,“vice_representative_director”,“director”].includes(m.role_type)).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+</select>
+</div>
+<div className="form-group"><label className="form-label">申請コメント</label><textarea className=“form-control form-textarea” value={form.comment} onChange={e => set(“comment”, e.target.value)} /></div>
+</Modal>
+);
+}
+
+// –– CONFLICTS ––
+function ConflictList({ data, setData, setPage, currentUser, goBack}) {
+const [showModal, setShowModal] = useState(false);
+
+const canSee = [“representative_director”,“vice_representative_director”,“director”].includes(currentUser.role_type);
+
+if (!canSee) {
+return (
+<div className="page-enter">
+<div className="back-bar"><button className="back-btn" onClick={goBack}>ダッシュボード</button></div>
+<div className="alert alert-warning">
+<span>🔒</span>
+<span>COI情報は権限者（代表理事・副代表理事・理事）のみ閲覧できます。</span>
+</div>
+</div>
+);
+}
+
+const handleSave = (formData) => {
+const newConflict = { id: genId(), …formData, declared_at: new Date().toISOString() };
+setData(d => ({
+…d, conflicts: […d.conflicts, newConflict],
+projects: d.projects.map(p => p.id === formData.project_id ? { …p, has_conflict_flag: true } : p)
+}));
+setShowModal(false);
+};
+
+return (
+<div className="page-enter">
+<div className="back-bar"><button className="back-btn" onClick={goBack}>ダッシュボード</button></div>
+<div className=“alert alert-warning” style={{ marginBottom: 16 }}>
+<span>🔒</span>
+<span>この情報は権限者のみ閲覧できます。取り扱いにご注意ください。</span>
+</div>
+
+```
+  <div className="filter-bar">
+    <button className="btn btn-primary" style={{ marginLeft: "auto" }} onClick={() => setShowModal(true)}>＋ COI申告</button>
+  </div>
+
+  <div className="card">
+    <div style={{ overflowX: "auto" }}>
+      <table className="data-table">
+        <thead>
+          <tr><th>対象案件</th><th>当事者</th><th>所属法人</th><th>自法人利害</th><th>審議参加</th><th>決議参加</th><th>確認状態</th><th>申告日</th></tr>
+        </thead>
+        <tbody>
+          {data.conflicts.map(c => {
+            const proj = data.projects.find(p => p.id === c.project_id);
+            const mem = data.members.find(m => m.id === c.member_id);
+            const checker = data.members.find(m => m.id === c.checked_by_member_id);
+            return (
+              <tr key={c.id}>
+                <td style={{ fontWeight: 600, fontSize: 13 }}>{proj?.project_name?.slice(0, 20)}…</td>
+                <td>{mem?.name}</td>
+                <td style={{ fontSize: 12 }}>{c.organization_name}</td>
+                <td>{c.self_interest_flag ? <span className="coi-flag coi-yes">あり</span> : <span className="coi-flag coi-no">なし</span>}</td>
+                <td>{c.join_discussion_flag ? <Badge className="badge-sage">可</Badge> : <Badge className="badge-crimson">不可</Badge>}</td>
+                <td>{c.join_vote_flag ? <Badge className="badge-sage">可</Badge> : <Badge className="badge-crimson">不可</Badge>}</td>
+                <td>
+                  {c.check_result
+                    ? <Badge className="badge-teal">確認済</Badge>
+                    : <Badge className="badge-gold">未確認</Badge>}
+                </td>
+                <td style={{ fontSize: 12 }}>{fmtDate(c.declared_at)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {showModal && (
+    <ConflictFormModal data={data} projectId={null} onClose={() => setShowModal(false)} onSave={handleSave} />
+  )}
+</div>
+```
+
+);
+}
+
+function ConflictFormModal({ data, projectId, onClose, onSave }) {
+const [form, setForm] = useState({
+project_id: projectId || “”,
+member_id: “”,
+organization_name: “”,
+self_interest_flag: false,
+related_company_flag: false,
+detail: “”,
+join_discussion_flag: true,
+join_vote_flag: true,
+checked_by_member_id: “”,
+check_result: “”,
+notes: “”,
+});
+const set = (k, v) => setForm(f => ({ …f, [k]: v }));
+
+return (
+<Modal title=“COI申告” onClose={onClose} onConfirm={() => form.project_id && form.member_id && onSave(form)}>
+<div className=“alert alert-warning” style={{ marginBottom: 12 }}>⚠️ 申告内容は権限者のみ閲覧できます</div>
+{!projectId && (
+<div className="form-group"><label className="form-label">対象案件 <span className="required">*</span></label>
+<select className=“form-control form-select” value={form.project_id} onChange={e => set(“project_id”, e.target.value)}>
+<option value="">選択してください</option>
+{data.projects.map(p => <option key={p.id} value={p.id}>{p.project_name}</option>)}
+</select>
+</div>
+)}
+<div className="form-row">
+<div className="form-group"><label className="form-label">当事者 <span className="required">*</span></label>
+<select className=“form-control form-select” value={form.member_id} onChange={e => set(“member_id”, e.target.value)}>
+<option value="">選択してください</option>
+{data.members.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+</select>
+</div>
+<div className="form-group"><label className="form-label">所属法人</label><input className=“form-control” value={form.organization_name} onChange={e => set(“organization_name”, e.target.value)} /></div>
+</div>
+<div style={{ display: “flex”, gap: 20, marginBottom: 16 }}>
+<label style={{ display: “flex”, alignItems: “center”, gap: 6, cursor: “pointer”, fontSize: 13 }}>
+<input type=“checkbox” checked={form.self_interest_flag} onChange={e => set(“self_interest_flag”, e.target.checked)} />
+自法人に利害関係あり
+</label>
+<label style={{ display: “flex”, alignItems: “center”, gap: 6, cursor: “pointer”, fontSize: 13 }}>
+<input type=“checkbox” checked={form.related_company_flag} onChange={e => set(“related_company_flag”, e.target.checked)} />
+関連企業に関係あり
+</label>
+</div>
+<div className="form-group"><label className="form-label">内容説明</label><textarea className=“form-control form-textarea” value={form.detail} onChange={e => set(“detail”, e.target.value)} /></div>
+<div style={{ display: “flex”, gap: 20, marginBottom: 16 }}>
+<label style={{ display: “flex”, alignItems: “center”, gap: 6, cursor: “pointer”, fontSize: 13 }}>
+<input type=“checkbox” checked={form.join_discussion_flag} onChange={e => set(“join_discussion_flag”, e.target.checked)} />
+審議参加可
+</label>
+<label style={{ display: “flex”, alignItems: “center”, gap: 6, cursor: “pointer”, fontSize: 13 }}>
+<input type=“checkbox” checked={form.join_vote_flag} onChange={e => set(“join_vote_flag”, e.target.checked)} />
+決議参加可
+</label>
+</div>
+</Modal>
+);
+}
+
+// –– ORG CHART ––
+function OrgChart({ data, goBack}) {
+const byRole = (role) => data.members.filter(m => m.role_type === role && m.status === “active”);
+
+return (
+<div className="page-enter">
+<div className="back-bar"><button className="back-btn" onClick={goBack}>ダッシュボード</button></div>
+<div className=“alert alert-info” style={{ marginBottom: 20 }}>
+📌 役割と位置づけの可視化。人間関係の調整ではなく、組織構造の透明化を目的としています。
+</div>
+
+```
+  <div className="card">
+    <div className="card-header"><span className="card-title">🏛️ 組織図</span></div>
+    <div className="card-body">
+      <div className="org-chart">
+        <div className="org-level">
+          {byRole("representative_director").map(m => (
+            <div key={m.id} className="org-node top">
+              <div className="org-node-role">代表理事</div>
+              <div className="org-node-name">{m.name}</div>
+              <div style={{ fontSize: 10, color: "var(--teal)", marginTop: 2 }}>{m.organization_name}</div>
+            </div>
+          ))}
+        </div>
+        <div className="org-connector"></div>
+        <div className="org-level">
+          {byRole("vice_representative_director").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">副代表理事</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+          {byRole("general_manager").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">統括部長</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+        </div>
+        <div className="org-connector"></div>
+        <div className="org-level">
+          {byRole("director").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">理事</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+          {byRole("secretariat").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">事務局</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+        </div>
+        <div className="org-connector"></div>
+        <div className="org-level">
+          {byRole("committee_chair").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">部会長</div>
+              <div className="org-node-name">{m.name}</div>
+              {m.committee_name && <div style={{ fontSize: 10, color: "var(--gray-500)", marginTop: 2 }}>{m.committee_name}</div>}
+            </div>
+          ))}
+        </div>
+        <div className="org-connector"></div>
+        <div className="org-level">
+          {byRole("committee_officer").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">部会役員</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+          {byRole("viewer").map(m => (
+            <div key={m.id} className="org-node">
+              <div className="org-node-role">閲覧専用</div>
+              <div className="org-node-name">{m.name}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 32 }}>
+        <div style={{ fontWeight: 700, color: "var(--navy)", marginBottom: 12, fontSize: 13 }}>権限一覧</div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead><tr><th>権限区分</th><th>全件閲覧</th><th>案件編集</th><th>承認</th><th>権限設定</th><th>マスタ管理</th></tr></thead>
+            <tbody>
+              {[
+                ["代表理事", "✓", "✓", "✓", "✓", "✓"],
+                ["副代表理事", "✓", "担当のみ", "指定のみ", "✕", "✕"],
+                ["理事", "理事会関連", "自担当のみ", "指定のみ", "✕", "✕"],
+                ["部会長", "自部会", "自部会", "✕", "✕", "✕"],
+                ["部会役員", "自部会（閲覧）", "一部", "✕", "✕", "✕"],
+                ["統括部長", "指定のみ", "指定のみ", "✕（最終不可）", "✕", "✕"],
+                ["事務局", "補助のみ", "補助のみ", "✕", "✕", "✕"],
+                ["閲覧専用", "✕", "✕", "✕", "✕", "✕"],
+              ].map(([r, ...cols]) => (
+                <tr key={r}>
+                  <td><Badge className="badge-navy">{r}</Badge></td>
+                  {cols.map((c, i) => (
+                    <td key={i} style={{ fontSize: 12, color: c === "✕" ? "var(--red)" : c === "✓" ? "var(--green)" : "var(--gray-600)" }}>{c}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+// –– SETTINGS ––
+function Settings({ currentUser, logoImage, setLogoImage, goBack}) {
+const canEdit = [“representative_director”].includes(currentUser.role_type);
+return (
+<div className="page-enter">
+<div className="back-bar"><button className="back-btn" onClick={goBack}>ダッシュボード</button></div>
+<div className=“card” style={{ marginBottom: 20 }}>
+<div className="card-header"><span className="card-title">🖼️ ロゴ画像設定</span></div>
+<div className="card-body">
+{!canEdit && (
+<div className=“alert alert-warning” style={{ marginBottom: 12 }}>ロゴ設定は代表理事のみ変更できます。</div>
+)}
+{canEdit
+? <LogoUpload value={logoImage} onChange={setLogoImage} />
+: logoImage
+? <img src={logoImage} alt=“ロゴ” style={{ maxHeight: 80, objectFit: “contain” }} />
+: <div style={{ fontSize: 12, color: “var(–gray-400)” }}>ロゴ未設定（デフォルトSVGを表示中）</div>
+}
+</div>
+</div>
+
+```
+  <div className="card">
+    <div className="card-header"><span className="card-title">⚙️ 管理設定</span></div>
+    <div className="card-body">
+      {!canEdit && (
+        <div className="alert alert-warning" style={{ marginBottom: 16 }}>
+          管理設定は代表理事のみ変更できます。
+        </div>
+      )}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontWeight: 700, color: "var(--navy)", marginBottom: 8, fontSize: 13 }}>区分マスタ</div>
+        {[
+          { label: "案件種別", items: ["行政対応案件","未来創造支援事業案件","研修事業案件","外部企業対応案件","会員向け施策案件","理事会検討案件","その他案件"] },
+          { label: "会議種別", items: ["理事会","部会","未来創造支援事業会議","外部協議","臨時会議","打ち合わせ"] },
+          { label: "承認ステータス", items: ["起案","確認中","承認待ち","承認済","差戻し","完了","取消"] },
+        ].map(({ label, items }) => (
+          <div key={label} style={{ marginBottom: 16 }}>
+            <div className="info-label" style={{ marginBottom: 6 }}>{label}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {items.map(item => <Badge key={item} className="badge-navy">{item}</Badge>)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="alert alert-info">
+        ℹ️ マスタの追加・変更は代表理事権限が必要です。変更が必要な場合は代表理事にお問い合わせください。
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+// ============================================================
+// LOGIN SCREEN
+// ============================================================
+function Login({ onLogin, logoImage, DefaultLogoSVG }) {
+const [loginId, setLoginId] = useState(””);
+const [password, setPassword] = useState(””);
+const [error, setError] = useState(””);
+
+const handleLogin = async () => {
+// まずSupabaseのusersテーブルから検索、失敗時はDEMO_USERSにフォールバック
+let user = null;
+try {
+const rows = await sb.select(“users”, `login_id=eq.${loginId}&password=eq.${password}`);
+if (rows && rows.length > 0) {
+user = { …rows[0], member_id: rows[0].member_id };
+}
+} catch(e) {
+// オフライン時はローカルデータで
+user = DEMO_USERS.find(u => u.login_id === loginId && u.password === password);
+}
+if (!user) user = DEMO_USERS.find(u => u.login_id === loginId && u.password === password);
+if (user) {
+const member = INITIAL_DATA.members.find(m => m.id === user.member_id);
+onLogin({ …user, …member });
+} else {
+setError(“ログインIDまたはパスワードが正しくありません”);
+}
+};
+
+return (
+<div style={{ minHeight: “100vh”, background: “linear-gradient(135deg, var(–navy) 0%, var(–navy-light) 40%, #1e3a5f 100%)”, display: “flex”, alignItems: “center”, justifyContent: “center”, padding: 16, fontFamily: “‘Noto Sans JP’, sans-serif” }}>
+<div style={{ background: “white”, borderRadius: 20, padding: “40px 36px”, width: “100%”, maxWidth: 420, boxShadow: “0 20px 60px rgba(0,0,0,0.3)” }}>
+<div style={{ textAlign: “center”, marginBottom: 32 }}>
+<div style={{ margin: “0 auto 12px”, display: “flex”, justifyContent: “center” }}>
+{logoImage
+? <img src={logoImage} alt=“ロゴ” style={{ maxWidth: 120, maxHeight: 80, objectFit: “contain” }} />
+: DefaultLogoSVG
+? <DefaultLogoSVG />
+: <svg viewBox=“0 0 120 80” xmlns=“http://www.w3.org/2000/svg” style={{ width: 100, display: “block” }}>
+<rect x="0"  y="0" width="36" height="36" fill="#3dbfa0" rx="2"/>
+<rect x="42" y="0" width="36" height="36" fill="#1a8f7e" rx="2"/>
+<rect x="84" y="0" width="36" height="36" fill="#2196c4" rx="2"/>
+<rect x="42" y="42" width="36" height="30" fill="#1565a8" rx="2"/>
+</svg>
+}
+</div>
+<div style={{ fontSize: 11, color: “var(–gray-400)”, letterSpacing: “0.08em”, marginBottom: 4 }}>一般社団法人</div>
+<div style={{ fontSize: 18, fontWeight: 800, color: “var(–navy)”, lineHeight: 1.4, marginBottom: 2 }}>豊中市介護保険事業者連絡会</div>
+<div style={{ fontSize: 13, color: “var(–gray-500)” }}>組織運営・案件管理</div>
+</div>
+
+```
+    {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
+
+    <div className="form-group">
+      <label className="form-label">ログインID</label>
+      <input className="form-control" value={loginId} onChange={e => setLoginId(e.target.value)} placeholder="ログインIDを入力" onKeyDown={e => e.key === "Enter" && handleLogin()} />
+    </div>
+    <div className="form-group">
+      <label className="form-label">パスワード</label>
+      <input type="password" className="form-control" value={password} onChange={e => setPassword(e.target.value)} placeholder="パスワードを入力" onKeyDown={e => e.key === "Enter" && handleLogin()} />
+    </div>
+
+    <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", padding: "11px", marginTop: 8 }} onClick={handleLogin}>
+      ログイン
+    </button>
+
+    <div style={{ marginTop: 24, padding: "16px", background: "var(--gray-50)", borderRadius: "var(--radius-sm)", fontSize: 11, color: "var(--gray-500)" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>デモアカウント（パスワード共通：demo1234）</div>
+      {[["yamada", "山田 太郎", "代表理事"], ["suzuki", "鈴木 花子", "副代表理事"], ["tanaka", "田中 一郎", "理事"], ["sato", "佐藤 美穂", "部会長"], ["ito", "伊藤 誠", "事務局"]].map(([id, name, role]) => (
+        <div key={id} style={{ display: "flex", justifyContent: "space-between", padding: "2px 0", cursor: "pointer" }} onClick={() => { setLoginId(id); setPassword("demo1234"); }}>
+          <span style={{ fontWeight: 600, color: "var(--teal)" }}>{id}</span>
+          <span>{name}</span>
+          <span>{role}</span>
+        </div>
+      ))}
+    </div>
+  </div>
+</div>
+```
+
+);
+}
+
+const NAV = [
+{ section: “メイン” },
+{ id: “dashboard”, label: “ダッシュボード”, icon: “🏠” },
+{ id: “calendar”, label: “カレンダー”, icon: “📅” },
+{ section: “案件管理” },
+{ id: “projects”, label: “案件一覧”, icon: “📋” },
+{ id: “approvals”, label: “承認フロー”, icon: “⚙️”, badge: true },
+{ id: “conflicts”, label: “COI申告”, icon: “🚨”, restricted: [“representative_director”,“vice_representative_director”,“director”] },
+{ section: “組織管理” },
+{ id: “members”, label: “メンバー管理”, icon: “🧑‍🤝‍🧑” },
+{ id: “meetings”, label: “会議記録”, icon: “📖” },
+{ id: “org”, label: “組織図・権限”, icon: “🏛️” },
+{ section: “設定” },
+{ id: “settings”, label: “管理設定”, icon: “⚙️” },
+];
+
+const PAGE_TITLES = {
+dashboard: “ダッシュボード”,
+calendar: “📅 カレンダー”,
+projects: “案件一覧”,
+“project-detail”: “案件詳細”,
+approvals: “承認フロー”,
+conflicts: “🚨 COI申告”,
+members: “メンバー管理”,
+“member-detail”: “メンバー詳細”,
+meetings: “会議記録”,
+“meeting-detail”: “会議詳細”,
+org: “組織図・権限”,
+settings: “⚙️ 管理設定”,
+};
+
+const STATUS_ICONS = {
+“起案前”: “📝”, “起案済”: “📤”, “調整中”: “⚖️”, “確認中”: “🔍”,
+“承認待ち”: “⚙️”, “承認済”: “✅”, “実行中”: “⚔️”, “完了”: “🏆”,
+“保留”: “⏸️”, “差戻し”: “↩️”, “中止”: “🚫”,
+“起案”: “📤”, “確認中”: “🔍”,
+};
+
+// ============================================================
+// NAV CONFIG
+// ============================================================
+
+// ============================================================
+// MAIN APP
+// ============================================================
+function App() {
+useStyles();
+const [currentUser, setCurrentUser] = useState(null);
+const [page, setPage] = useState(“dashboard”);
+const [detailId, setDetailId] = useState(null);
+const [data, setData] = useState(INITIAL_DATA);
+const [loading, setLoading] = useState(true);
+const [sidebarOpen, setSidebarOpen] = useState(false);
+const [history, setHistory] = useState([]);
+const [logoImage, setLogoImage] = useState(null);
+const [fabOpen, setFabOpen] = useState(false);
+const [fabModal, setFabModal] = useState(null); // “project” | “meeting” | “member”
+
+// Supabaseからデータ初期ロード
+useEffect(() => {
+loadAllData()
+.then(d => { setData(d); setLoading(false); })
+.catch(err => { console.error(“DB load error:”, err); setLoading(false); });
+}, []);
+
+const pendingApprovalCount = data.approvals.filter(a => a.status === “承認待ち”).length;
+
+// ロゴSVG（デフォルト）
+const DefaultLogoSVG = () => (
+<svg viewBox=“0 0 120 72” xmlns=“http://www.w3.org/2000/svg” style={{ width: 80, height: 48, display: “block” }}>
+<rect x="0"  y="0" width="36" height="36" fill="#3dbfa0" rx="2"/>
+<rect x="42" y="0" width="36" height="36" fill="#1a8f7e" rx="2"/>
+<rect x="84" y="0" width="36" height="36" fill="#2196c4" rx="2"/>
+<rect x="42" y="42" width="36" height="30" fill="#1565a8" rx="2"/>
+</svg>
+);
+
+if (loading) {
+return (
+<div style={{ display: “flex”, flexDirection: “column”, alignItems: “center”, justifyContent: “center”, height: “100vh”, gap: 16, background: “var(–bg)” }}>
+<div style={{ fontSize: 40 }}>🏥</div>
+<div style={{ fontSize: 14, color: “var(–text-muted)”, fontWeight: 600 }}>データを読み込み中…</div>
+<div style={{ width: 40, height: 40, border: “4px solid var(–primary-light)”, borderTopColor: “var(–primary)”, borderRadius: “50%”, animation: “spin 0.8s linear infinite” }} />
+<style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+</div>
+);
+}
+
+if (!currentUser) {
+return (
+<>
+<Login onLogin={setCurrentUser} logoImage={logoImage} DefaultLogoSVG={DefaultLogoSVG} />
+</>
+);
+}
+
+const visibleNav = NAV.filter(item => !item.restricted || item.restricted.includes(currentUser.role_type));
+
+const navigate = (pageId) => {
+setHistory([]);
+setPage(pageId);
+setDetailId(null);
+setSidebarOpen(false);
+};
+
+const navigateTo = (pageId, id = null) => {
+setHistory(h => […h, { page, detailId }]);
+setPage(pageId);
+setDetailId(id);
+setSidebarOpen(false);
+};
+
+const goBack = () => {
+if (history.length === 0) return;
+const prev = history[history.length - 1];
+setPage(prev.page);
+setDetailId(prev.detailId);
+setHistory(h => h.slice(0, -1));
+};
+
+return (
+<>
+<div className="app-root">
+
+```
+    {/* ===== PC用サイドバー ===== */}
+    <aside className="sidebar">
+      <div className="sidebar-logo">
+        {logoImage
+          ? <img src={logoImage} alt="ロゴ" style={{ maxWidth: 80, maxHeight: 48, objectFit: "contain", display: "block", margin: "0 auto 10px" }} />
+          : <div className="sidebar-crest">🏰</div>
+        }
+        <div className="sidebar-logo-title">組織運営管理</div>
+        <div className="sidebar-logo-name">豊中市介護保険<br/>事業者連絡会</div>
+        <div style={{ color: "rgba(15,108,189,0.5)", fontSize: 9.5, marginTop: 5, letterSpacing: "0.06em" }}>案件管理システム</div>
+      </div>
+      <nav className="sidebar-nav">
+        {visibleNav.map((item, i) => {
+          if (item.section) return <div key={i} className="nav-section">{item.section}</div>;
+          return (
+            <div key={item.id} className={`nav-item ${page === item.id || (page === "project-detail" && item.id === "projects") || (page === "meeting-detail" && item.id === "meetings") || (page === "member-detail" && item.id === "members") ? "active" : ""}`} onClick={() => navigate(item.id)}>
+              <span className="nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+              {item.badge && pendingApprovalCount > 0 && <span className="nav-badge">{pendingApprovalCount}</span>}
+            </div>
+          );
+        })}
+      </nav>
+      <div className="sidebar-user">
+        <div className="user-avatar">{currentUser.name.charAt(0)}</div>
+        <div>
+          <div className="user-name">{currentUser.name}</div>
+          <div className="user-role">{ROLE_LABELS[currentUser.role_type]}</div>
+        </div>
+      </div>
+    </aside>
+
+    {/* ===== モバイル用ドロワー ===== */}
+    {sidebarOpen && (
+      <div className="mobile-drawer-overlay" onClick={() => setSidebarOpen(false)} style={{ opacity: 1 }} />
+    )}
+    <div className={`mobile-drawer ${sidebarOpen ? "open" : ""}`}>
+      <div style={{ padding: "20px 16px 12px", borderBottom: "1px solid rgba(255,255,255,0.08)", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          {logoImage
+            ? <img src={logoImage} alt="ロゴ" style={{ maxWidth: 80, maxHeight: 44, objectFit: "contain", display: "block", marginBottom: 6 }} />
+            : <DefaultLogoSVG />
+          }
+          <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 10, marginTop: 6 }}>一般社団法人</div>
+          <div style={{ color: "white", fontSize: 12, fontWeight: 700, lineHeight: 1.4 }}>豊中市介護保険事業者連絡会</div>
+        </div>
+        <button onClick={() => setSidebarOpen(false)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.7)", fontSize: 20, cursor: "pointer", padding: 4 }}>✕</button>
+      </div>
+      <nav style={{ padding: "8px 0" }}>
+        {visibleNav.map((item, i) => {
+          if (item.section) return <div key={i} className="nav-section">{item.section}</div>;
+          return (
+            <div key={item.id} className={`nav-item ${page === item.id || (page === "project-detail" && item.id === "projects") || (page === "meeting-detail" && item.id === "meetings") || (page === "member-detail" && item.id === "members") ? "active" : ""}`} onClick={() => navigate(item.id)}>
+              <span className="nav-icon">{item.icon}</span>
+              <span>{item.label}</span>
+              {item.badge && pendingApprovalCount > 0 && <span className="nav-badge">{pendingApprovalCount}</span>}
+            </div>
+          );
+        })}
+      </nav>
+      <div style={{ borderTop: "1px solid rgba(255,255,255,0.08)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+        <div className="user-avatar">{currentUser.name.charAt(0)}</div>
+        <div>
+          <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>{currentUser.name}</div>
+          <div style={{ color: "rgba(255,255,255,0.45)", fontSize: 11 }}>{ROLE_LABELS[currentUser.role_type]}</div>
+        </div>
+        <button className="btn btn-outline btn-sm" style={{ marginLeft: "auto", color: "rgba(255,255,255,0.6)", borderColor: "rgba(255,255,255,0.2)" }} onClick={() => setCurrentUser(null)}>ログアウト</button>
+      </div>
+    </div>
+
+    {/* ===== メインコンテンツ ===== */}
+    <main className="main-content">
+      <div className="topbar">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {/* モバイル：ハンバーガーボタン */}
+          <button
+            className="btn btn-outline btn-sm btn-icon"
+            style={{ display: "none" }}
+            id="mobile-menu-btn"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+          >☰</button>
+          <style>{`@media(max-width:768px){#mobile-menu-btn{display:flex!important}}`}</style>
+          <span className="topbar-title">{PAGE_TITLES[page] || "—"}</span>
+        </div>
+        <div className="topbar-actions">
+          {pendingApprovalCount > 0 && (
+            <button className="btn btn-outline btn-sm" onClick={() => navigate("approvals")} style={{ color: "var(--crimson-light)", borderColor: "var(--crimson-light)" }}>
+              ⚙️ {pendingApprovalCount}件 承認待ち
+            </button>
+          )}
+          {!["viewer"].includes(currentUser.role_type) && (
+            <div style={{ position: "relative", display: "none" }} id="pc-create-wrap">
+              <style>{`@media(min-width:769px){#pc-create-wrap{display:block!important}}`}</style>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setFabOpen(o => !o)}
+                style={{ gap: 5 }}
+              >
+                <span style={{ fontSize: 14, lineHeight: 1 }}>+</span> 新規作成
+              </button>
+              {fabOpen && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 950,
+                  background: "white",
+                  border: "1px solid var(--border)", borderRadius: 10,
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.2)",
+                  overflow: "hidden", minWidth: 220,
+                }}>
+                  <div style={{ padding: "8px 12px 6px", fontSize: 10, fontWeight: 700, color: "var(--text-muted)", letterSpacing: "0.08em", textTransform: "uppercase", borderBottom: "1px solid var(--border)" }}>
+                    + 新規作成
+                  </div>
+                  {[
+                    { icon: "📋", label: "案件を追加", page: "projects" },
+                    { icon: "📖", label: "会議を追加", page: "meetings" },
+                    ...( ["representative_director","vice_representative_director","secretariat"].includes(currentUser.role_type)
+                      ? [{ icon: "🧑‍🤝‍🧑", label: "メンバーを追加", page: "members" }]
+                      : [] ),
+                  ].map(item => (
+                    <div key={item.page} onClick={() => { setFabOpen(false); navigate(item.page); }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        padding: "11px 16px", cursor: "pointer",
+                        transition: "background 0.1s", fontSize: 13, fontWeight: 600, color: "var(--text-primary)",
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = "rgba(15,108,189,0.08)"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                    >
+                      <span style={{ fontSize: 18 }}>{item.icon}</span>
+                      {item.label}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button className="btn btn-outline btn-sm" style={{ display: "none" }} id="pc-logout" onClick={() => setCurrentUser(null)}>ログアウト</button>
+          <style>{`@media(min-width:769px){#pc-logout{display:flex!important}}`}</style>
+        </div>
+      </div>
+
+      <div className="page-body">
+        {page === "dashboard" && <Dashboard data={data} setPage={navigateTo} setDetailId={setDetailId} goBack={goBack} />}
+        {page === "members" && <MemberList data={data} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "member-detail" && <MemberDetail data={data} memberId={detailId} setPage={navigateTo} currentUser={currentUser} goBack={goBack} />}
+        {page === "projects" && <ProjectList data={data} setData={setData} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "project-detail" && <ProjectDetail data={data} setData={setData} projectId={detailId} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "meetings" && <MeetingList data={data} setData={setData} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "meeting-detail" && <MeetingDetail data={data} meetingId={detailId} setPage={navigateTo} currentUser={currentUser} goBack={goBack} />}
+        {page === "approvals" && <ApprovalList data={data} setData={setData} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "conflicts" && <ConflictList data={data} setData={setData} setPage={navigateTo} currentUser={currentUser} goBack={goBack} />}
+        {page === "calendar" && <CalendarView data={data} setData={setData} setPage={navigateTo} setDetailId={setDetailId} currentUser={currentUser} goBack={goBack} />}
+        {page === "org" && <OrgChart data={data} setPage={navigateTo} goBack={goBack} />}
+        {page === "settings" && <Settings currentUser={currentUser} logoImage={logoImage} setLogoImage={setLogoImage} setPage={navigateTo} goBack={goBack} />}
+      </div>
+    </main>
+
+    {/* ===== FAB 新規作成ボタン ===== */}
+    {!["viewer"].includes(currentUser.role_type) && (
+      <>
+        {/* オーバーレイ */}
+        {fabOpen && (
+          <div onClick={() => setFabOpen(false)} style={{
+            position: "fixed", inset: 0, zIndex: 900,
+            background: "rgba(28,16,8,0.55)", backdropFilter: "blur(2px)",
+          }} />
+        )}
+
+        {/* サブメニュー */}
+        <div style={{
+          position: "fixed", right: 20, bottom: fabOpen ? 100 : 80, zIndex: 910,
+          display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 10,
+          transition: "bottom 0.25s cubic-bezier(0.34,1.56,0.64,1)",
+          opacity: fabOpen ? 1 : 0, pointerEvents: fabOpen ? "auto" : "none",
+          transform: fabOpen ? "translateY(0)" : "translateY(20px)",
+        }}>
+          {[
+            { key: "project", icon: "📋", label: "案件を追加", color: "#92400e", bg: "linear-gradient(135deg,#fef3c7,#fde68a)", border: "#f59e0b" },
+            { key: "meeting", icon: "📖", label: "会議を追加", color: "#065f46", bg: "linear-gradient(135deg,#d1fae5,#a7f3d0)", border: "#34d399" },
+            { key: "member", icon: "🧑‍🤝‍🧑", label: "メンバーを追加", color: "#1e3a5f", bg: "linear-gradient(135deg,#dbeafe,#bfdbfe)", border: "#60a5fa",
+              hidden: !["representative_director","vice_representative_director","secretariat"].includes(currentUser.role_type) },
+          ].filter(x => !x.hidden).map((item, i) => (
+            <div key={item.key} onClick={() => { setFabOpen(false); if (item.key === "project") navigate("projects"); else if (item.key === "meeting") navigate("meetings"); else navigate("members"); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 10,
+                background: "white", border: "1px solid var(--border)",
+                borderRadius: 28, padding: "10px 18px 10px 14px",
+                cursor: "pointer", boxShadow: "var(--shadow-deep)",
+                transform: fabOpen ? "scale(1)" : "scale(0.8)",
+                transition: `transform 0.2s ${0.05 * i}s ease`,
+                userSelect: "none",
+              }}>
+              <span style={{ fontSize: 22 }}>{item.icon}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", whiteSpace: "nowrap" }}>{item.label}</span>
+            </div>
+          ))}
+        </div>
+
+        {/* メインFABボタン */}
+        <button onClick={() => setFabOpen(o => !o)} style={{
+          position: "fixed", right: 20, bottom: 84, zIndex: 920,
+          width: 58, height: 58, borderRadius: "50%",
+          background: fabOpen ? "var(--danger)" : "var(--primary)",
+          border: "none",
+          boxShadow: "0 4px 16px rgba(15,108,189,0.4)",
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 26, fontWeight: 900, color: "white",
+          transition: "all 0.2s ease",
+          transform: fabOpen ? "rotate(45deg)" : "rotate(0deg)",
+        }}>
+          +
+        </button>
+
+        {/* PCにも表示（トップバー右上に追加ボタン） */}
+        <style>{`
+          @media(min-width:769px){
+            .fab-mobile-only { display: none !important; }
+          }
+          .fab-btn-pc {
+            display: none;
+          }
+          @media(min-width:769px){
+            .fab-btn-pc { display: flex !important; }
+          }
+        `}</style>
+      </>
+    )}
+
+    {/* ===== モバイル用ボトムナビ ===== */}
+    <nav className="bottom-nav">
+      <div className="bottom-nav-inner">
+        {[
+          { id: "dashboard", label: "ホーム", svg: <svg width="22" height="22" fill="none" viewBox="0 0 24 24"><path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+          { id: "calendar", label: "カレンダー", svg: <svg width="22" height="22" fill="none" viewBox="0 0 24 24"><path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+          { id: "projects", label: "案件", svg: <svg width="22" height="22" fill="none" viewBox="0 0 24 24"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+          { id: "approvals", label: "承認", badge: pendingApprovalCount, svg: <svg width="22" height="22" fill="none" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+          { id: "members", label: "メンバー", svg: <svg width="22" height="22" fill="none" viewBox="0 0 24 24"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg> },
+        ].map(item => {
+          const isActive = page === item.id
+            || (page === "project-detail" && item.id === "projects")
+            || (page === "meeting-detail" && item.id === "meetings")
+            || (page === "member-detail" && item.id === "members");
+          return (
+            <div key={item.id} className={`bottom-nav-item ${isActive ? "active" : ""}`} onClick={() => navigate(item.id)}>
+              <div className="bn-icon-wrap" style={{ color: isActive ? "var(--primary)" : "var(--gray-400)" }}>
+                {item.svg}
+              </div>
+              <span className="bn-label">{item.label}</span>
+              {item.badge > 0 && <span className="bn-badge">{item.badge}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </nav>
+
+  </div>
+</>
+```
+
+);
+}
+
+const root = ReactDOM.createRoot(document.getElementById(‘root’));
+root.render(<App />);
+</script>
+
+</body>
+</html>
